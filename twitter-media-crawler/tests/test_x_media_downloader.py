@@ -101,11 +101,21 @@ class BuildConfigTest(unittest.TestCase):
         self.assertTrue(os.path.isabs(cfg["extractor"]["base-directory"]))
 
     def test_user(self):
-        cfg = xmd.build_config(make_opts(target="nasa", retweets=True, update_only=True))
+        cfg = xmd.build_config(make_opts(target="NASA", retweets=True), quick_refresh=True)
         tw = cfg["extractor"]["twitter"]
         self.assertEqual(tw["directory"], ["{user[name]}"])
         self.assertEqual(tw["retweets"], "original")
-        self.assertEqual(cfg["extractor"]["skip"], f"abort:{xmd.UPDATE_SKIP_LIMIT}")
+        self.assertEqual(cfg["extractor"]["skip"], f"abort:{xmd.QUICK_REFRESH_SKIP_LIMIT}")
+
+    def test_history_archive(self):
+        cfg = xmd.build_config(make_opts(target="NASA"))
+        base = Path(cfg["extractor"]["base-directory"])
+        # 계정 아이디는 대소문자 구분 없이 같은 기록을 쓴다
+        self.assertEqual(cfg["extractor"]["archive"], str(base / ".download-history" / "nasa.sqlite3"))
+        self.assertEqual(cfg["extractor"]["archive-event"], "file,skip")
+        self.assertNotIn("skip", cfg["extractor"])  # quick_refresh 기본값 False
+        cfg = xmd.build_config(make_opts(target=xmd.BOOKMARKS))
+        self.assertTrue(cfg["extractor"]["archive"].endswith(os.path.join(".download-history", "bookmarks.sqlite3")))
 
     def test_media_filters(self):
         photos = xmd.build_config(make_opts(media=xmd.MEDIA_PHOTOS))["extractor"]["twitter"]
@@ -207,8 +217,9 @@ class OptionsFromArgsTest(unittest.TestCase):
         self.assertEqual((opts.cookie_mode, opts.cookies_file), (xmd.COOKIE_FILE, "c.txt"))
 
     def test_flags(self):
-        opts = self.parse("nasa", "--only", "videos", "--retweets", "--update", "-o", "out")
-        self.assertEqual((opts.media, opts.retweets, opts.update_only, opts.output_dir), ("videos", True, True, "out"))
+        opts = self.parse("nasa", "--only", "videos", "--retweets", "-o", "out")
+        self.assertEqual((opts.media, opts.retweets, opts.quick_refresh, opts.output_dir), ("videos", True, True, "out"))
+        self.assertFalse(self.parse("nasa", "--full").quick_refresh)
 
     def test_bad_target(self):
         with self.assertRaises(ValueError):
@@ -259,6 +270,86 @@ class DownloadTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             xmd.download(make_opts(auth_token=""), lambda k, t: None, runner)
         self.assertIsNone(runner.config_path)
+
+
+class ScopeTest(unittest.TestCase):
+    def test_scope_covered(self):
+        all_rt = {"media": "all", "retweets": True}
+        photos = {"media": "photos", "retweets": False}
+        self.assertFalse(xmd.scope_covered([], photos))
+        self.assertTrue(xmd.scope_covered([all_rt], photos))
+        self.assertTrue(xmd.scope_covered([all_rt], {"media": "videos", "retweets": True}))
+        self.assertTrue(xmd.scope_covered([photos], photos))
+        # 사진만 받았던 대상을 '전체'나 '동영상만'으로 바꾸면 예전 동영상을 받은 적이 없음
+        self.assertFalse(xmd.scope_covered([photos], {"media": "all", "retweets": False}))
+        self.assertFalse(xmd.scope_covered([photos], {"media": "videos", "retweets": False}))
+        # 리트윗 제외로 받았던 대상에 리트윗 포함을 켜면 예전 리트윗은 받은 적이 없음
+        self.assertFalse(xmd.scope_covered([{"media": "all", "retweets": False}], {"media": "all", "retweets": True}))
+
+    def test_run_scope_ignores_retweets_for_bookmarks(self):
+        self.assertEqual(xmd.run_scope(make_opts(target=xmd.BOOKMARKS, retweets=True))["retweets"], False)
+        self.assertEqual(xmd.run_scope(make_opts(target="nasa", retweets=True))["retweets"], True)
+
+    def test_state_file_roundtrip_and_corruption(self):
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d) / "x.json"
+            self.assertEqual(xmd.load_completed_scopes(state), [])
+            xmd.record_full_scan(state, {"media": "all", "retweets": False})
+            xmd.record_full_scan(state, {"media": "all", "retweets": False})  # 중복 기록 안 함
+            self.assertEqual(xmd.load_completed_scopes(state), [{"media": "all", "retweets": False}])
+            state.write_text("garbage", encoding="utf-8")
+            self.assertEqual(xmd.load_completed_scopes(state), [])
+
+
+class QuickRefreshGatingTest(unittest.TestCase):
+    """빠른 새로고침은 전체 받기를 끝까지 마친 뒤에만 켜져야 한다."""
+
+    def run_once(self, out, code=0, stop=False, **kw):
+        runner = FakeRunner([], code=code)
+        if stop:
+            runner.stopped = True
+        events = []
+        result = xmd.download(make_opts(output_dir=out, **kw), lambda k, t: events.append((k, t)), runner)
+        return result, runner.config, events
+
+    def test_first_run_is_full_then_quick(self):
+        with tempfile.TemporaryDirectory() as out:
+            r1, cfg1, _ = self.run_once(out, target="nasa")
+            self.assertFalse(r1.quick)
+            self.assertNotIn("skip", cfg1["extractor"])
+            r2, cfg2, _ = self.run_once(out, target="NASA")  # 대소문자만 다른 같은 계정
+            self.assertTrue(r2.quick)
+            self.assertEqual(cfg2["extractor"]["skip"], f"abort:{xmd.QUICK_REFRESH_SKIP_LIMIT}")
+            # 다른 대상은 별개
+            r3, _, _ = self.run_once(out, target=xmd.BOOKMARKS)
+            self.assertFalse(r3.quick)
+
+    def test_failed_or_stopped_full_run_is_not_recorded(self):
+        with tempfile.TemporaryDirectory() as out:
+            self.run_once(out, code=4, target="nasa")
+            self.assertFalse(self.run_once(out, stop=True, code=-15, target="nasa")[0].quick)
+            self.assertFalse(self.run_once(out, target="nasa")[0].quick)  # 이번엔 성공 → 기록
+            self.assertTrue(self.run_once(out, target="nasa")[0].quick)
+
+    def test_wider_scope_needs_full_run(self):
+        with tempfile.TemporaryDirectory() as out:
+            self.run_once(out, target="nasa", media=xmd.MEDIA_PHOTOS)
+            self.assertTrue(self.run_once(out, target="nasa", media=xmd.MEDIA_PHOTOS)[0].quick)
+            self.assertFalse(self.run_once(out, target="nasa", media=xmd.MEDIA_ALL)[0].quick)
+            self.assertTrue(self.run_once(out, target="nasa", media=xmd.MEDIA_VIDEOS)[0].quick)
+
+    def test_quick_refresh_off_always_full(self):
+        with tempfile.TemporaryDirectory() as out:
+            self.run_once(out, target="nasa")
+            r, cfg, _ = self.run_once(out, target="nasa", quick_refresh=False)
+            self.assertFalse(r.quick)
+            self.assertNotIn("skip", cfg["extractor"])
+
+    def test_invalid_input_creates_nothing(self):
+        with tempfile.TemporaryDirectory() as out:
+            with self.assertRaises(ValueError):
+                xmd.download(make_opts(output_dir=out, auth_token=""), lambda k, t: None, FakeRunner([]))
+            self.assertEqual(os.listdir(out), [])
 
 
 class ProcessRunnerTest(unittest.TestCase):

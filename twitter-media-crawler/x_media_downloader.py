@@ -56,8 +56,14 @@ COOKIE_FILE = "file"
 
 BROWSERS = ("firefox", "chrome", "edge", "brave", "opera", "vivaldi", "chromium", "safari")
 
-# '새 게시물만' 모드: 이미 받은 파일이 이만큼 연속으로 나오면 그 뒤는 이미 받은 것으로 보고 중단
-UPDATE_SKIP_LIMIT = 20
+# 빠른 새로고침: 전체 받기를 한 번 끝낸 대상은, 이미 받은 파일이 이만큼 연속으로 나오면 멈춘다.
+# 북마크(북마크한 순서)와 계정 타임라인(게시 순서) 모두 최신 항목이 맨 앞에 오므로 그 뒤는 이미 받은 것이다.
+QUICK_REFRESH_SKIP_LIMIT = 20
+
+# 받은 기록 폴더: <저장 폴더>/.download-history/
+#   <대상>.sqlite3  받은 파일 목록 (게시물 ID 기준, gallery-dl archive)
+#   <대상>.json     전체 받기를 끝낸 범위 (빠른 새로고침을 써도 되는지 판단)
+HISTORY_DIR_NAME = ".download-history"
 
 # 저장 경로: <저장 폴더>/bookmarks/... 또는 <저장 폴더>/<계정아이디>/...
 FILENAME_FORMAT = "{date:%Y%m%d}_{author[name]}_{tweet_id}_{num}.{extension}"
@@ -106,7 +112,7 @@ class Options:
     output_dir: str = DEFAULT_OUTPUT_DIR
     media: str = MEDIA_ALL  # MEDIA_ALL / MEDIA_PHOTOS / MEDIA_VIDEOS
     retweets: bool = False  # 계정 모드에서 리트윗한 게시물의 미디어도 받기
-    update_only: bool = False  # 이미 받은 파일이 연속으로 나오면 중단
+    quick_refresh: bool = True  # 전체 받기를 끝낸 대상은 새로 생긴 것만 확인
     cookie_mode: str = COOKIE_MANUAL
     auth_token: str = ""
     ct0: str = ""
@@ -230,8 +236,56 @@ def cookies_setting(opts: Options):
     raise ValueError(f"알 수 없는 쿠키 방식입니다: {opts.cookie_mode}")
 
 
-def build_config(opts: Options) -> dict:
-    """Options → gallery-dl 설정(JSON). 잘못된 입력이면 ValueError."""
+def output_base(opts: Options) -> Path:
+    return Path(opts.output_dir.strip()).expanduser().resolve()
+
+
+def history_paths(base_dir: Path, target: str) -> tuple:
+    """대상별 (받은 기록 DB, 상태 파일) 경로. 계정 아이디는 대소문자를 구분하지 않는다."""
+    key = BOOKMARKS if target == BOOKMARKS else target.lower()
+    directory = base_dir / HISTORY_DIR_NAME
+    return directory / f"{key}.sqlite3", directory / f"{key}.json"
+
+
+def run_scope(opts: Options) -> dict:
+    """이번 실행이 받으려는 범위 (전체 받기 완료 기록과 비교용)."""
+    return {"media": opts.media, "retweets": bool(opts.retweets and opts.target != BOOKMARKS)}
+
+
+def scope_covered(done_scopes: list, scope: dict) -> bool:
+    """끝낸 전체 받기 중 이번 범위를 모두 포함하는 것이 있으면 True.
+
+    예) '사진만'으로 전체를 받은 뒤 '사진 + 동영상'으로 바꾸면 예전 동영상은 받은 적이 없으므로 False.
+    """
+    for done in done_scopes:
+        media_ok = done.get("media") in (MEDIA_ALL, scope["media"])
+        retweets_ok = bool(done.get("retweets")) or not scope["retweets"]
+        if media_ok and retweets_ok:
+            return True
+    return False
+
+
+def load_completed_scopes(state_path: Path) -> list:
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    scopes = data.get("full_scans") if isinstance(data, dict) else None
+    return [s for s in scopes if isinstance(s, dict)] if isinstance(scopes, list) else []
+
+
+def record_full_scan(state_path: Path, scope: dict) -> None:
+    scopes = load_completed_scopes(state_path)
+    if scope not in scopes:
+        scopes.append(scope)
+    state_path.write_text(json.dumps({"full_scans": scopes}, indent=2), encoding="utf-8")
+
+
+def build_config(opts: Options, quick_refresh: bool = False) -> dict:
+    """Options → gallery-dl 설정(JSON). 잘못된 입력이면 ValueError.
+
+    quick_refresh=True면 이미 받은 파일이 연속으로 나올 때 멈춘다 (download()가 안전할 때만 켠다).
+    """
     if opts.media not in (MEDIA_ALL, MEDIA_PHOTOS, MEDIA_VIDEOS):
         raise ValueError(f"알 수 없는 미디어 종류입니다: {opts.media}")
     if not opts.output_dir.strip():
@@ -254,12 +308,18 @@ def build_config(opts: Options) -> dict:
         # GIF도 X에서는 mp4 동영상으로 제공된다
         twitter["file-filter"] = "type in ('video', 'animated_gif')"
 
+    base_dir = output_base(opts)
+    archive_path, _ = history_paths(base_dir, opts.target)
     extractor = {
-        "base-directory": str(Path(opts.output_dir.strip()).expanduser().resolve()),
+        "base-directory": str(base_dir),
+        # 받은 기록(게시물 ID 기준): 파일을 옮기거나 지워도, 작성자가 아이디를 바꿔 파일 이름이
+        # 달라져도 다시 받지 않는다. 'skip'도 기록해 기록이 생기기 전에 받아 둔 파일도 등록한다.
+        "archive": str(archive_path),
+        "archive-event": "file,skip",
         "twitter": twitter,
     }
-    if opts.update_only:
-        extractor["skip"] = f"abort:{UPDATE_SKIP_LIMIT}"
+    if quick_refresh:
+        extractor["skip"] = f"abort:{QUICK_REFRESH_SKIP_LIMIT}"
 
     return {
         "extractor": extractor,
@@ -304,7 +364,7 @@ def _strip_extended_prefix(path: str) -> str:
 def classify_line(line: str) -> tuple:
     """gallery-dl 출력 한 줄 → (종류, 표시할 텍스트).
 
-    종류: 'file'(다운로드 완료), 'skip'(이미 있음), 'error', 'warning', 'info'
+    종류: 'file'(다운로드 완료), 'skip'(이미 받음), 'error', 'warning', 'info'
     """
     if line.startswith("# "):
         return "skip", _strip_extended_prefix(line[2:])
@@ -398,9 +458,10 @@ class Result:
     errors: int = 0
     returncode: int = 0
     stopped: bool = False
+    quick: bool = False  # 빠른 새로고침으로 실행됐는지
 
     def summary(self) -> str:
-        counts = f"받음 {self.downloaded}개 · 건너뜀(이미 있음) {self.skipped}개"
+        counts = f"받음 {self.downloaded}개 · 건너뜀(이미 받음) {self.skipped}개"
         if self.stopped:
             return f"중지됨 — {counts}"
         return f"{describe_exit(self.returncode)} — {counts}"
@@ -414,12 +475,18 @@ def download(
     """gallery-dl로 다운로드를 실행한다. on_event(종류, 텍스트)로 진행 상황을 알린다.
 
     입력이 잘못됐으면 아무것도 실행하지 않고 ValueError를 던진다.
+
+    빠른 새로고침은 같은(또는 더 넓은) 범위로 전체 받기를 끝까지 마친 기록이 있을 때만 켠다.
+    처음 받기가 중간에 끊긴 상태에서 켜면 앞쪽의 이미 받은 파일에서 멈춰 뒤쪽을 영영 못 받기 때문이다.
     """
-    config = build_config(opts)
-    base_dir = Path(config["extractor"]["base-directory"])
-    base_dir.mkdir(parents=True, exist_ok=True)
+    base_dir = output_base(opts)
+    archive_path, state_path = history_paths(base_dir, opts.target)
+    scope = run_scope(opts)
+    quick = opts.quick_refresh and scope_covered(load_completed_scopes(state_path), scope)
+    config = build_config(opts, quick_refresh=quick)  # 입력 검증 — 실패하면 아무것도 만들지 않음
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
     runner = runner or ProcessRunner()
-    result = Result()
+    result = Result(quick=quick)
 
     def handle(line: str) -> None:
         kind, text = classify_line(line)
@@ -442,6 +509,13 @@ def download(
             json.dump(config, fp, ensure_ascii=False)
         url = target_url(opts.target)
         on_event("info", f"시작: {url}  →  {base_dir}")
+        if quick:
+            on_event(
+                "info",
+                f"빠른 새로고침: 새로 생긴 것만 받고, 이미 받은 파일이 연속 {QUICK_REFRESH_SKIP_LIMIT}개 나오면 멈춥니다.",
+            )
+        else:
+            on_event("info", "전체 확인: 처음부터 끝까지 확인합니다. (이미 받은 파일은 건너뜀)")
         result.returncode = runner.run(gallery_dl_command(config_path, url), handle)
     finally:
         try:
@@ -449,6 +523,15 @@ def download(
         except OSError:
             pass
     result.stopped = runner.stopped
+
+    if not quick and result.returncode == 0 and not result.stopped:
+        try:
+            record_full_scan(state_path, scope)
+        except OSError as exc:
+            on_event("warning", f"전체 받기 완료 기록을 저장하지 못했습니다: {exc}")
+        else:
+            if opts.quick_refresh:
+                on_event("info", "전체 받기를 끝냈습니다. 다음부터는 새로 생긴 것만 빠르게 확인합니다.")
     return result
 
 
@@ -471,9 +554,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--only", choices=(MEDIA_PHOTOS, MEDIA_VIDEOS), help="사진만 또는 동영상만 받기")
     p.add_argument("--retweets", action="store_true", help="계정 모드에서 리트윗한 게시물의 미디어도 받기")
     p.add_argument(
-        "--update",
+        "--full",
         action="store_true",
-        help=f"새 게시물만: 이미 받은 파일이 연속 {UPDATE_SKIP_LIMIT}개 나오면 중단",
+        help=(
+            "빠른 새로고침을 끄고 처음부터 끝까지 다시 확인 (이미 받은 파일은 그래도 건너뜀). "
+            "기본은 전체 받기를 한 번 끝낸 대상이면 새로 생긴 것만 확인"
+        ),
     )
     auth = p.add_argument_group("로그인 쿠키 (셋 중 하나)")
     auth.add_argument("--auth-token", metavar="값", help="x.com 쿠키 auth_token 값")
@@ -493,7 +579,7 @@ def options_from_args(args: argparse.Namespace, base: Options) -> Options:
         opts.output_dir = args.out
     opts.media = args.only or MEDIA_ALL
     opts.retweets = args.retweets
-    opts.update_only = args.update
+    opts.quick_refresh = not args.full
 
     auth_token = args.auth_token or os.environ.get("X_AUTH_TOKEN", "")
     ct0 = args.ct0 or os.environ.get("X_CT0", "")
@@ -590,7 +676,7 @@ class App:
         self.v_remember = tk.BooleanVar(value=opts.remember_login)
         self.v_media = tk.StringVar(value=opts.media)
         self.v_retweets = tk.BooleanVar(value=opts.retweets)
-        self.v_update_only = tk.BooleanVar(value=opts.update_only)
+        self.v_quick_refresh = tk.BooleanVar(value=opts.quick_refresh)
         self.v_output_dir = tk.StringVar(value=opts.output_dir)
         self.v_status = tk.StringVar(value="대기 중")
         self.v_engine = tk.StringVar(value="엔진: 확인 중…")
@@ -694,8 +780,8 @@ class App:
         self.c_retweets.grid(row=1, column=0, columnspan=4, sticky="w")
         ttk.Checkbutton(
             f_opts,
-            text=f"새 게시물만 받기 (이미 받은 파일이 연속 {UPDATE_SKIP_LIMIT}개 나오면 멈춤 — 두 번째 실행부터 빠름)",
-            variable=self.v_update_only,
+            text="빠른 새로고침 (전체를 한 번 받은 뒤에는 새로 생긴 것만 확인)",
+            variable=self.v_quick_refresh,
         ).grid(row=2, column=0, columnspan=4, sticky="w")
         ttk.Label(f_opts, text="저장 폴더").grid(row=3, column=0, sticky="w", pady=(6, 0))
         ttk.Entry(f_opts, textvariable=self.v_output_dir).grid(row=3, column=1, sticky="ew", padx=4, pady=(6, 0))
@@ -774,7 +860,7 @@ class App:
             output_dir=self.v_output_dir.get().strip(),
             media=self.v_media.get(),
             retweets=self.v_retweets.get(),
-            update_only=self.v_update_only.get(),
+            quick_refresh=self.v_quick_refresh.get(),
             cookie_mode=self.v_cookie_mode.get(),
             auth_token=self.v_auth_token.get(),
             ct0=self.v_ct0.get(),
@@ -877,7 +963,7 @@ class App:
         self.root.after(GUI_POLL_MS, self._drain_events)
 
     def _append(self, kind: str, text: str) -> None:
-        prefix = "(이미 있음) " if kind == "skip" else ""
+        prefix = "(이미 받음) " if kind == "skip" else ""
         self.log.configure(state="normal")
         self.log.insert("end", prefix + text + "\n", kind)
         lines = int(self.log.index("end-1c").split(".")[0])
