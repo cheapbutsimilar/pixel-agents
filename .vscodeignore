@@ -19,3 +19,4 @@ esbuild.js
 **/.vscode-test.*
 CLAUDE.md
 **/*.jsonl
+twitter-media-crawler/**

@@ -1,0 +1,3 @@
+# X 내부 API 처리(쿼리 ID, 트랜잭션 헤더 등)는 gallery-dl이 담당한다.
+# X가 바뀌어 다운로드가 실패하면:  python -m pip install --upgrade gallery-dl
+gallery-dl>=1.32.19

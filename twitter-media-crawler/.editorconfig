@@ -1,0 +1,5 @@
+[*.py]
+indent_size = 4
+
+[*.bat]
+end_of_line = crlf

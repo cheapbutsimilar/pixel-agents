@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+# 로그인 쿠키가 들어 있는 파일이 실수로 커밋되지 않도록
+cookies*.txt
+settings.json

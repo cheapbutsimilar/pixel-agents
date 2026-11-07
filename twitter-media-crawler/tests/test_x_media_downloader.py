@@ -1,0 +1,314 @@
+"""x_media_downloader 단위 테스트 (네트워크 불필요).
+
+실행:  python -m unittest discover -s tests -v
+"""
+
+import argparse
+import json
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import x_media_downloader as xmd  # noqa: E402
+
+
+def make_opts(**kwargs):
+    defaults = {"auth_token": "TOKEN", "ct0": "CSRF", "output_dir": tempfile.gettempdir()}
+    defaults.update(kwargs)
+    return xmd.Options(**defaults)
+
+
+class ParseTargetTest(unittest.TestCase):
+    def test_bookmarks(self):
+        for raw in ("bookmarks", "Bookmarks", " 북마크 ", "https://x.com/i/bookmarks", "x.com/i/bookmarks/"):
+            self.assertEqual(xmd.parse_target(raw), xmd.BOOKMARKS, raw)
+
+    def test_usernames(self):
+        cases = {
+            "nasa": "nasa",
+            "@NASA": "NASA",
+            "  @user_01 ": "user_01",
+            "https://x.com/nasa": "nasa",
+            "https://twitter.com/nasa/media": "nasa",
+            "x.com/nasa?lang=ko": "nasa",
+            "https://mobile.twitter.com/nasa/status/123": "nasa",
+            "www.x.com/nasa/": "nasa",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(xmd.parse_target(raw), expected, raw)
+
+    def test_invalid(self):
+        for raw in ("", "   ", "@", "bad name", "한글", "https://example.com/nasa", "https://x.com/", "https://x.com/home", "x.com/i/lists/1"):
+            with self.assertRaises(ValueError, msg=raw):
+                xmd.parse_target(raw)
+
+    def test_target_url(self):
+        self.assertEqual(xmd.target_url(xmd.BOOKMARKS), "https://x.com/i/bookmarks")
+        self.assertEqual(xmd.target_url("nasa"), "https://x.com/nasa")
+
+
+class CookiesTest(unittest.TestCase):
+    def test_clean_cookie_value(self):
+        self.assertEqual(xmd.clean_cookie_value('  "abc123"  ', "auth_token"), "abc123")
+        self.assertEqual(xmd.clean_cookie_value("auth_token=abc123;", "auth_token"), "abc123")
+        self.assertEqual(xmd.clean_cookie_value("ct0= xyz ", "ct0"), "xyz")
+
+    def test_manual(self):
+        self.assertEqual(
+            xmd.cookies_setting(make_opts(auth_token=" auth_token=T ", ct0="'C'")),
+            {"auth_token": "T", "ct0": "C"},
+        )
+        self.assertEqual(xmd.cookies_setting(make_opts(ct0="")), {"auth_token": "TOKEN"})
+        with self.assertRaises(ValueError):
+            xmd.cookies_setting(make_opts(auth_token="  "))
+
+    def test_browser(self):
+        opts = make_opts(cookie_mode=xmd.COOKIE_BROWSER, browser="Firefox")
+        self.assertEqual(xmd.cookies_setting(opts), ["firefox", None, None, None, ".x.com"])
+        with self.assertRaises(ValueError):
+            xmd.cookies_setting(make_opts(cookie_mode=xmd.COOKIE_BROWSER, browser="netscape"))
+
+    def test_file(self):
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as fp:
+            path = fp.name
+        try:
+            opts = make_opts(cookie_mode=xmd.COOKIE_FILE, cookies_file=path)
+            self.assertEqual(xmd.cookies_setting(opts), str(Path(path).resolve()))
+        finally:
+            os.remove(path)
+        with self.assertRaises(ValueError):
+            xmd.cookies_setting(make_opts(cookie_mode=xmd.COOKIE_FILE, cookies_file=path))
+        with self.assertRaises(ValueError):
+            xmd.cookies_setting(make_opts(cookie_mode=xmd.COOKIE_FILE, cookies_file=""))
+
+
+class BuildConfigTest(unittest.TestCase):
+    def test_bookmarks(self):
+        cfg = xmd.build_config(make_opts(target=xmd.BOOKMARKS, retweets=True))
+        tw = cfg["extractor"]["twitter"]
+        self.assertEqual(tw["directory"], ["bookmarks"])
+        self.assertFalse(tw["retweets"])  # 북마크에는 의미 없음
+        self.assertTrue(tw["videos"])
+        self.assertNotIn("file-filter", tw)
+        self.assertNotIn("skip", cfg["extractor"])
+        self.assertEqual(tw["filename"], xmd.FILENAME_FORMAT)
+        self.assertEqual(cfg["output"]["mode"], "pipe")
+        self.assertTrue(os.path.isabs(cfg["extractor"]["base-directory"]))
+
+    def test_user(self):
+        cfg = xmd.build_config(make_opts(target="nasa", retweets=True, update_only=True))
+        tw = cfg["extractor"]["twitter"]
+        self.assertEqual(tw["directory"], ["{user[name]}"])
+        self.assertEqual(tw["retweets"], "original")
+        self.assertEqual(cfg["extractor"]["skip"], f"abort:{xmd.UPDATE_SKIP_LIMIT}")
+
+    def test_media_filters(self):
+        photos = xmd.build_config(make_opts(media=xmd.MEDIA_PHOTOS))["extractor"]["twitter"]
+        self.assertFalse(photos["videos"])
+        self.assertNotIn("file-filter", photos)
+        videos = xmd.build_config(make_opts(media=xmd.MEDIA_VIDEOS))["extractor"]["twitter"]
+        self.assertTrue(videos["videos"])
+        self.assertIn("animated_gif", videos["file-filter"])
+
+    def test_invalid(self):
+        with self.assertRaises(ValueError):
+            xmd.build_config(make_opts(media="gifs"))
+        with self.assertRaises(ValueError):
+            xmd.build_config(make_opts(output_dir="  "))
+
+    def test_config_is_json_serializable(self):
+        json.dumps(xmd.build_config(make_opts(cookie_mode=xmd.COOKIE_BROWSER)))
+
+    def test_command(self):
+        cmd = xmd.gallery_dl_command("/tmp/c.json", "https://x.com/nasa")
+        self.assertEqual(cmd[0], sys.executable)
+        self.assertEqual(cmd[1:], ["-m", "gallery_dl", "--config-ignore", "-c", "/tmp/c.json", "https://x.com/nasa"])
+
+
+class ClassifyLineTest(unittest.TestCase):
+    def test_lines(self):
+        abs_path = os.path.join(os.path.abspath(os.sep), "out", "nasa", "a.jpg")
+        self.assertEqual(xmd.classify_line(abs_path), ("file", abs_path))
+        self.assertEqual(xmd.classify_line("# " + abs_path), ("skip", abs_path))
+        self.assertEqual(xmd.classify_line("\\\\?\\C:\\out\\a.jpg"), ("file", "C:\\out\\a.jpg"))
+        self.assertEqual(xmd.classify_line("[twitter][error] boom")[0], "error")
+        self.assertEqual(xmd.classify_line("[downloader.http][warning] slow")[0], "warning")
+        self.assertEqual(xmd.classify_line("[twitter][info] Waiting until 12:00")[0], "info")
+        self.assertEqual(xmd.classify_line("Traceback (most recent call last):")[0], "info")
+
+    def test_describe_exit(self):
+        self.assertEqual(xmd.describe_exit(0), "완료")
+        self.assertIn("로그인 쿠키", xmd.describe_exit(16))
+        self.assertIn("엔진 업데이트", xmd.describe_exit(4))
+        self.assertIn("로그인 쿠키", xmd.describe_exit(4 | 16))
+        self.assertIn("[error]", xmd.describe_exit(1))
+
+
+class SettingsTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        patcher = mock.patch.object(xmd, "SETTINGS_FILE", Path(self.tmp.name) / "sub" / "settings.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_roundtrip(self):
+        opts = make_opts(target="nasa", media=xmd.MEDIA_VIDEOS, retweets=True)
+        xmd.save_settings(opts)
+        self.assertEqual(xmd.load_settings(), opts)
+        if os.name == "posix":
+            self.assertEqual(xmd.SETTINGS_FILE.stat().st_mode & 0o777, 0o600)
+
+    def test_forget_login(self):
+        xmd.save_settings(make_opts(remember_login=False))
+        loaded = xmd.load_settings()
+        self.assertEqual((loaded.auth_token, loaded.ct0), ("", ""))
+        self.assertFalse(loaded.remember_login)
+
+    def test_missing_or_broken(self):
+        self.assertEqual(xmd.load_settings(), xmd.Options())
+        xmd.SETTINGS_FILE.parent.mkdir(parents=True)
+        xmd.SETTINGS_FILE.write_text("{not json", encoding="utf-8")
+        self.assertEqual(xmd.load_settings(), xmd.Options())
+        xmd.SETTINGS_FILE.write_text(json.dumps({"media": 3, "retweets": True, "unknown": 1}), encoding="utf-8")
+        loaded = xmd.load_settings()
+        self.assertEqual(loaded.media, xmd.MEDIA_ALL)  # 잘못된 타입은 기본값
+        self.assertTrue(loaded.retweets)
+
+
+class OptionsFromArgsTest(unittest.TestCase):
+    def parse(self, *argv, env=None, base=None):
+        args = xmd.build_arg_parser().parse_args(list(argv))
+        with mock.patch.dict(os.environ, env or {}, clear=False):
+            for key in ("X_AUTH_TOKEN", "X_CT0"):
+                if not env or key not in env:
+                    os.environ.pop(key, None)
+            return xmd.options_from_args(args, base or xmd.Options(auth_token="SAVED", ct0="SAVEDCT0"))
+
+    def test_defaults_use_saved_login(self):
+        opts = self.parse("@nasa")
+        self.assertEqual(opts.target, "nasa")
+        self.assertEqual((opts.cookie_mode, opts.auth_token, opts.ct0), (xmd.COOKIE_MANUAL, "SAVED", "SAVEDCT0"))
+
+    def test_new_token_does_not_reuse_saved_ct0(self):
+        opts = self.parse("bookmarks", "--auth-token", "NEW")
+        self.assertEqual((opts.auth_token, opts.ct0), ("NEW", ""))
+        opts = self.parse("bookmarks", env={"X_AUTH_TOKEN": "ENV", "X_CT0": "ENVCT0"})
+        self.assertEqual((opts.auth_token, opts.ct0), ("ENV", "ENVCT0"))
+
+    def test_browser_and_file(self):
+        self.assertEqual(self.parse("nasa", "--browser", "firefox").cookie_mode, xmd.COOKIE_BROWSER)
+        opts = self.parse("nasa", "--cookies", "c.txt")
+        self.assertEqual((opts.cookie_mode, opts.cookies_file), (xmd.COOKIE_FILE, "c.txt"))
+
+    def test_flags(self):
+        opts = self.parse("nasa", "--only", "videos", "--retweets", "--update", "-o", "out")
+        self.assertEqual((opts.media, opts.retweets, opts.update_only, opts.output_dir), ("videos", True, True, "out"))
+
+    def test_bad_target(self):
+        with self.assertRaises(ValueError):
+            self.parse("bad name")
+
+
+class FakeRunner(xmd.ProcessRunner):
+    def __init__(self, lines, code=0):
+        super().__init__()
+        self.lines, self.code = lines, code
+        self.config = None
+        self.config_path = None
+
+    def run(self, cmd, on_line):
+        self.config_path = cmd[cmd.index("-c") + 1]
+        with open(self.config_path, encoding="utf-8") as fp:
+            self.config = json.load(fp)
+        for line in self.lines:
+            on_line(line)
+        return self.code
+
+
+class DownloadTest(unittest.TestCase):
+    def test_counts_and_cleanup(self):
+        with tempfile.TemporaryDirectory() as out:
+            base = str(Path(out).resolve())
+            runner = FakeRunner(
+                [
+                    os.path.join(base, "nasa", "a.jpg"),
+                    os.path.join(base, "nasa", "b.mp4"),
+                    "# " + os.path.join(base, "nasa", "c.jpg"),
+                    "[twitter][error] something",
+                ],
+                code=4,
+            )
+            events = []
+            result = xmd.download(make_opts(target="nasa", output_dir=out), lambda k, t: events.append((k, t)), runner)
+
+            self.assertEqual((result.downloaded, result.skipped, result.errors, result.returncode), (2, 1, 1, 4))
+            self.assertFalse(result.stopped)
+            self.assertIn(("file", os.path.join("nasa", "a.jpg")), events)  # 저장 폴더 기준 상대 경로로 표시
+            self.assertEqual(runner.config["extractor"]["twitter"]["cookies"], {"auth_token": "TOKEN", "ct0": "CSRF"})
+            self.assertFalse(os.path.exists(runner.config_path), "로그인 쿠키가 든 임시 설정 파일은 지워져야 함")
+            self.assertIn("받음 2개", result.summary())
+
+    def test_invalid_input_runs_nothing(self):
+        runner = FakeRunner([])
+        with self.assertRaises(ValueError):
+            xmd.download(make_opts(auth_token=""), lambda k, t: None, runner)
+        self.assertIsNone(runner.config_path)
+
+
+class ProcessRunnerTest(unittest.TestCase):
+    def test_streams_lines_and_exit_code(self):
+        lines = []
+        code = xmd.ProcessRunner().run(
+            [sys.executable, "-c", "import sys; print('하나'); print(''); print('둘'); sys.exit(3)"], lines.append
+        )
+        self.assertEqual((lines, code), (["하나", "둘"], 3))
+
+    def test_stop_before_start(self):
+        runner = xmd.ProcessRunner()
+        runner.stop()
+        self.assertEqual(runner.run([sys.executable, "-c", "print(1)"], lambda line: None), -1)
+
+    def test_stop_while_running(self):
+        import threading
+
+        runner = xmd.ProcessRunner()
+        started = threading.Event()
+
+        def on_line(line):
+            started.set()
+
+        t = threading.Thread(
+            target=runner.run,
+            args=([sys.executable, "-c", "import time; print('go', flush=True); time.sleep(60)"], on_line),
+        )
+        t.start()
+        self.assertTrue(started.wait(10))
+        runner.stop()
+        t.join(10)
+        self.assertFalse(t.is_alive())
+        self.assertTrue(runner.stopped)
+
+
+class MainTest(unittest.TestCase):
+    def test_cli_rejects_bad_input_without_running(self):
+        with mock.patch.object(xmd, "load_settings", return_value=xmd.Options()), mock.patch.object(
+            xmd, "download"
+        ) as download:
+            self.assertEqual(xmd.main(["@nasa"]), 2)  # 로그인 쿠키 없음
+            self.assertEqual(xmd.main(["not valid"]), 2)
+            download.assert_not_called()
+
+    def test_parser(self):
+        args = xmd.build_arg_parser().parse_args([])
+        self.assertIsInstance(args, argparse.Namespace)
+        self.assertIsNone(args.target)
+
+
+if __name__ == "__main__":
+    unittest.main()
