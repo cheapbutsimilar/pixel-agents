@@ -2,8 +2,9 @@
 # X 미디어 다운로더 — 안드로이드(Termux) 설치/업데이트
 #
 # Termux 앱에서 아래 한 줄을 붙여넣어 실행합니다. 다시 실행하면 앱과 엔진을 최신으로 업데이트합니다.
-# (yes | pkg upgrade 를 먼저 해야 한다: 갓 설치한 Termux에서 curl만 올리면 openssl과 버전이 어긋나 curl이 깨진다)
-#   yes | pkg upgrade && pkg install -y curl && curl -fsSLo setup.sh https://raw.githubusercontent.com/cheapbutsimilar/pixel-agents/claude/twitter-media-crawler-j2oynh/twitter-media-crawler/setup_android.sh && bash setup.sh
+# 전체 업그레이드를 먼저 해야 한다: 갓 설치한 Termux에서 curl만 올리면 openssl과 버전이 어긋나 curl이 깨지고,
+# 그러면 curl을 쓰는 pkg 명령도 함께 멈춘다. 그래서 pkg 대신 apt를 직접 쓴다.
+#   apt update && yes | apt full-upgrade && apt install -y curl && curl -fsSLo setup.sh https://raw.githubusercontent.com/cheapbutsimilar/pixel-agents/claude/twitter-media-crawler-j2oynh/twitter-media-crawler/setup_android.sh && bash setup.sh
 set -euo pipefail
 
 BASE_URL="${XMD_BASE_URL:-https://raw.githubusercontent.com/cheapbutsimilar/pixel-agents/claude/twitter-media-crawler-j2oynh/twitter-media-crawler}"
@@ -21,7 +22,7 @@ fi
 
 step "1/4 파이썬 설치"
 if ! command -v python3 >/dev/null 2>&1; then
-  pkg install -y python
+  apt update && apt install -y python
 fi
 python3 --version
 

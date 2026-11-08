@@ -34,10 +34,10 @@
    - 홈 화면 버튼을 쓰려면 **[Termux:Widget](https://f-droid.org/packages/com.termux.widget/)**도 **Termux와 같은 곳**에서 설치하세요. 설치처가 다르면 서로 연결되지 않습니다.
 2. Termux를 열고 아래 한 줄을 붙여넣은 뒤 Enter를 누릅니다. (화면을 길게 누르면 Paste 메뉴가 나옵니다)
    ```
-   yes | pkg upgrade && pkg install -y curl && curl -fsSLo setup.sh https://raw.githubusercontent.com/cheapbutsimilar/pixel-agents/claude/twitter-media-crawler-j2oynh/twitter-media-crawler/setup_android.sh && bash setup.sh
+   apt update && yes | apt full-upgrade && apt install -y curl && curl -fsSLo setup.sh https://raw.githubusercontent.com/cheapbutsimilar/pixel-agents/claude/twitter-media-crawler-j2oynh/twitter-media-crawler/setup_android.sh && bash setup.sh
    ```
    중간에 **저장소 접근 권한** 팝업이 뜨면 **허용**을 누르세요.
-   (앞의 `yes | pkg upgrade`는 Termux를 최신으로 맞추는 단계입니다. 빼면 `CANNOT LINK EXECUTABLE "curl"` 오류가 날 수 있습니다)
+   (앞부분은 Termux를 최신으로 맞추는 단계로, 몇 분 걸립니다. 빼면 `CANNOT LINK EXECUTABLE "curl"` 오류가 날 수 있습니다)
 3. **실행** — 홈 화면 빈 곳 길게 누르기 › **위젯** › **Termux:Widget** 추가 → 위젯 안에 버튼 두 개가 생깁니다.
    (Termux:Widget 앱 아이콘을 누르면 영어 설명 화면만 나오는데 정상입니다. 앱이 아니라 위젯으로 씁니다)
    - **X 다운로더**: 메뉴 (1 북마크 / 2 특정 계정 / 3 로그인 / 4 옵션 / 5 엔진 업데이트). 처음 받을 때 `auth_token`, `ct0`를 물어봅니다.
