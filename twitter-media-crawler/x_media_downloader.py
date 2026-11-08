@@ -434,6 +434,22 @@ def classify_line(line: str) -> tuple:
     return "info", line
 
 
+# 오류 안내 문구. 실행 환경마다 고치는 방법이 달라서 바꿔 끼울 수 있게 둔다 (안드로이드 앱은 android_bridge에서 교체).
+HINTS = {
+    "login": (
+        "X가 로그인 쿠키를 받아주지 않았습니다. auth_token/ct0 값이 틀렸거나 만료됐습니다. "
+        "PC 브라우저에서 x.com에 로그인된 상태로 두 값을 새로 복사해 다시 입력하세요 "
+        "(글자 메뉴 3번, 창에서는 로그인 칸). X에서 로그아웃하면 그 쿠키는 더 이상 쓸 수 없습니다."
+    ),
+    "engine": (
+        "X에서 데이터를 받지 못했습니다. 인터넷 연결과 계정 아이디를 확인하고, 계속 실패하면 "
+        "'엔진 업데이트'(또는 --upgrade-engine)로 gallery-dl을 최신 버전으로 올린 뒤 다시 시도하세요."
+    ),
+}
+# 시작 줄에 저장 폴더를 보여줄지 (안드로이드 앱은 사용자가 열 수 없는 내부 폴더라 숨긴다)
+SHOW_OUTPUT_DIR = True
+
+
 def describe_exit(code: int, auth_error: bool = False) -> str:
     """gallery-dl 종료 코드(오류 종류별 비트 OR)를 사람이 읽을 설명으로.
 
@@ -443,20 +459,13 @@ def describe_exit(code: int, auth_error: bool = False) -> str:
         return "완료"
     hints = []
     if code & 16 or auth_error:
-        hints.append(
-            "X가 로그인 쿠키를 받아주지 않았습니다. auth_token/ct0 값이 틀렸거나 만료됐습니다. "
-            "PC 브라우저에서 x.com에 로그인된 상태로 두 값을 새로 복사해 다시 입력하세요 "
-            "(글자 메뉴 3번, 창에서는 로그인 칸). X에서 로그아웃하면 그 쿠키는 더 이상 쓸 수 없습니다."
-        )
+        hints.append(HINTS["login"])
         if not auth_error:
             hints.append("(계정을 받는 중이었다면 비공개 계정이거나 나를 차단한 계정일 수도 있습니다)")
     if code & 8:
         hints.append("X가 자동화 요청을 막았습니다. 잠시 후 다시 시도하세요.")
     if code & 4 and not auth_error:
-        hints.append(
-            "X에서 데이터를 받지 못했습니다. 인터넷 연결과 계정 아이디를 확인하고, 계속 실패하면 "
-            "'엔진 업데이트'(또는 --upgrade-engine)로 gallery-dl을 최신 버전으로 올린 뒤 다시 시도하세요."
-        )
+        hints.append(HINTS["engine"])
     if code & (32 | 64):
         hints.append("설정 또는 주소 오류입니다. 로그의 [error] 줄을 확인하세요.")
     if not hints:
@@ -585,7 +594,7 @@ def download(
         with os.fdopen(fd, "w", encoding="utf-8") as fp:
             json.dump(config, fp, ensure_ascii=False)
         url = target_url(opts.target)
-        on_event("info", f"시작: {url}  →  {base_dir}")
+        on_event("info", f"시작: {url}  →  {base_dir}" if SHOW_OUTPUT_DIR else f"시작: {url}")
         for warning in cookie_warnings(opts):
             on_event("warning", warning)
         if is_post:

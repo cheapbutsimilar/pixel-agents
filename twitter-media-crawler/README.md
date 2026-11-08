@@ -5,10 +5,32 @@
 - 사진은 원본 해상도, 동영상은 가장 높은 화질로 저장합니다. (GIF는 X에서 mp4로 제공되므로 mp4로 저장)
 - **한 번 받은 건 다시 받지 않습니다.** 받은 파일을 다른 폴더로 옮기거나 지워도, 작성자가 아이디를 바꿔도 마찬가지입니다.
 - 처음 한 번 전체를 받고 나면, 그다음부터는 새로 북마크했거나 새로 올라온 것만 빠르게 확인해서 받습니다.
-- PC(Windows/맥/리눅스)는 창(GUI)으로, **안드로이드 폰(갤럭시 등)은 Termux 앱에서 메뉴 방식**으로 씁니다.
+- **안드로이드 폰(갤럭시 등)은 전용 앱(APK)**을 설치해서 씁니다. 앱 안에서 X에 로그인하면 끝 — 쿠키를 복사할 필요가 없습니다.
+- PC(Windows/맥/리눅스)는 창(GUI) 또는 명령줄로 씁니다.
 
 실제 수집은 오픈소스 [gallery-dl](https://github.com/mikf/gallery-dl)이 맡습니다. X는 내부 API를 자주 바꾸는데,
 그럴 때 이 앱을 고칠 필요 없이 앱의 **엔진 업데이트** 버튼만 누르면 됩니다.
+
+## 안드로이드 앱 (갤럭시 등) — 추천
+
+1. 휴대폰에서 이 링크를 열어 APK를 받습니다: [XMediaDownloader.apk](https://github.com/cheapbutsimilar/pixel-agents/raw/claude/twitter-media-crawler-j2oynh/twitter-media-crawler/android/release/XMediaDownloader.apk)
+2. 받은 파일을 눌러 설치합니다.
+   - "출처를 알 수 없는 앱" 경고가 나오면 **설정 → 이 출처 허용**을 켭니다. (Play 스토어 앱이 아니라서 나오는 정상 경고)
+   - Play 프로텍트가 "알 수 없는 개발자"라고 하면 **자세히 → 무시하고 설치**를 누릅니다.
+3. 앱을 열고 **X 로그인** → X 로그인 화면에서 평소처럼 로그인하면 자동으로 닫힙니다.
+   - 비밀번호는 X 페이지에 직접 입력되고, 앱은 비밀번호를 보거나 저장하지 않습니다.
+   - 구글 계정으로만 가입한 X 계정은 앱 안에서 구글 로그인이 막혀 있습니다. X 설정에서 비밀번호를 먼저 만든 뒤 아이디·비밀번호로 로그인하세요.
+4. **내 북마크** 또는 **특정 계정**을 고르고 **다운로드 시작**. 화면을 꺼도 계속 받고, 진행 상황은 알림에 나옵니다.
+5. 받은 사진·동영상은 **갤러리의 `bookmarks` 앨범 또는 계정 아이디 앨범**에 있습니다. (내 파일 › Pictures › XMedia)
+6. **X 앱에서 바로 받기**: X 앱에서 게시물이나 프로필의 공유 버튼 → **다른 앱으로 공유** → **X 미디어 다운로드**
+   - 게시물은 그 게시물만, 프로필은 그 계정 전체를 받습니다.
+7. **업데이트**: 같은 링크에서 새 APK를 받아 그대로 설치하면 됩니다. 로그인과 받은 기록은 유지됩니다.
+   X가 바뀌어서 갑자기 안 될 때는 먼저 앱 아래쪽의 **엔진 업데이트**를 눌러 보세요 (APK를 다시 받지 않아도 됨).
+
+- 한 번 받은 게시물은 갤러리에서 옮기거나 지워도 다시 받지 않습니다. 기록은 앱 안에 있어서, **앱을 삭제하면 기록도 사라집니다.**
+- **반드시 위 링크(이 저장소)에서 받은 APK만** 설치하세요.
+
+> 아래 1~7번은 PC와 Termux(안드로이드 명령줄) 사용법입니다. 안드로이드 앱만 쓴다면 읽지 않아도 됩니다.
 
 ## 1. 준비
 
@@ -26,7 +48,7 @@
 | macOS / Linux | 터미널에서 이 폴더로 이동 후 `bash run_mac_linux.sh`   |
 | 안드로이드    | 아래 [안드로이드 폰](#안드로이드-폰-갤럭시-등) 참고     |
 
-### 안드로이드 폰 (갤럭시 등)
+### 안드로이드 폰 — Termux로 쓰기 (고급, 앱 대신)
 
 휴대폰에서는 무료 앱 **Termux**(안드로이드용 리눅스 터미널) 안에서 실행합니다. 화면은 번호를 고르는 메뉴 방식입니다.
 
@@ -168,7 +190,16 @@ requirements.txt        gallery-dl
 run_windows.bat         Windows 실행기 (.venv 생성 + 설치 + 실행)
 run_mac_linux.sh        macOS/Linux/안드로이드(Termux) 실행기
 setup_android.sh        안드로이드 Termux 설치·업데이트 (앱 내려받기, 엔진 설치, 홈 화면 버튼)
+android/                안드로이드 앱 (Kotlin + Chaquopy로 파이썬·gallery-dl 내장)
+  app/src/main/python/  android_bridge.py (gallery-dl을 앱 안에서 실행) + x_media_downloader.py (위 파일 링크)
+  pytests/              앱 엔진 테스트 (실제 gallery-dl + 가짜 X API)
+  signing/              앱 서명 키 (저장소에 올리지 않음. 업데이트 설치가 되려면 항상 같은 키여야 함)
+  release/              배포용 APK
 ```
+
+안드로이드 앱 빌드: `cd android && ./gradlew assembleRelease` (Android SDK 35, JDK 17+, Python 3.13 필요) →
+`app/build/outputs/apk/release/app-release.apk`. 엔진 테스트: `python -m unittest discover -s android/pytests`
+(gallery-dl 1.32.19가 설치된 파이썬 3.13).
 
 테스트: `python -m unittest discover -s tests -v`
 

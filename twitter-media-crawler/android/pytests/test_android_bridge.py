@@ -148,7 +148,9 @@ class DownloadTest(BridgeTestBase):
         result, lst = self.run_bridge("bookmarks", scenario="bad_cookie")
         self.assertIn("[twitter][error] 'Could not authenticate you'", lst.kinds("error"))
         self.assertTrue(result["auth_error"])
-        self.assertIn("로그인 쿠키", result["summary"])
+        self.assertIn("다시 로그인", result["summary"])  # 안드로이드용 안내
+        self.assertNotIn("글자 메뉴", result["summary"])
+        self.assertFalse(any("/staging" in t for t in lst.kinds("info")))  # 내부 폴더 경로는 숨김
         self.assertNotEqual(result["returncode"], 0)
 
     def test_invalid_target_and_missing_cookie(self):
@@ -292,43 +294,84 @@ class EngineTest(BridgeTestBase):
 
         return mock.patch("urllib.request.urlopen", side_effect=urlopen)
 
-    def test_update_and_activate_on_next_start(self):
-        wheel = self.make_wheel("99.0.0", os.path.join(self.tmp.name, "w.whl"))
-        with self.fake_pypi("99.0.0", wheel):
-            msg = bridge.update_engine()
-        self.assertIn("99.0.0", msg)
-        installed = os.path.join(self.files_dir, "engine", "gallery_dl.whl")
-        self.assertTrue(os.path.isfile(installed))
-        # 앱 재시작(새 파이썬)에서는 업데이트된 엔진이 쓰인다
+    def update(self, version):
+        wheel = self.make_wheel(version, os.path.join(self.tmp.name, f"w{version}.whl"))
+        with self.fake_pypi(version, wheel):
+            return json.loads(bridge.update_engine())
+
+    def engine_dir(self):
+        return os.path.join(self.files_dir, "engine")
+
+    def fresh_start(self, *calls):
+        """앱 재시작 흉내: 새 파이썬에서 init() 후 engine_version()과 추가 호출 결과를 출력."""
+        extra = "".join(f"; print(b.{c}())" for c in calls)
         code = (
             f"import sys; sys.path.insert(0, {str(PY_SRC)!r}); import android_bridge as b; "
-            f"b.init({self.files_dir!r}); print(b.engine_version())"
+            f"b.init({self.files_dir!r}); print(b.engine_version()){extra}"
         )
         out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
-        self.assertIn("99.0.0 (업데이트됨)", out.stdout, out.stderr)
-        self.assertIn("기본 엔진으로", bridge.reset_engine())
-        self.assertFalse(os.path.exists(installed))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout
+
+    def test_update_applies_on_next_start(self):
+        result = self.update("99.0.0")
+        self.assertEqual(result["restart"], True)
+        self.assertIn("99.0.0", result["message"])
+        self.assertTrue(os.path.isfile(os.path.join(self.engine_dir(), "gallery_dl-99.0.0.whl")))
+        self.assertIn("다시 시작하면 99.0.0 적용", bridge.engine_version())
+        self.assertIn("99.0.0 (업데이트됨)", self.fresh_start())
+        # 같은 버전을 또 받지 않는다
+        self.assertIn("이미 받아", self.update("99.0.0")["message"])
+
+    def test_engine_file_in_use_is_never_replaced_or_deleted(self):
+        """업데이트된 엔진으로 실행 중에 다시 업데이트/되돌리기를 해도 쓰는 중인 파일은 그대로여야 한다."""
+        self.update("99.0.0")
+        in_use = os.path.join(self.engine_dir(), "gallery_dl-99.0.0.whl")
+        before = Path(in_use).read_bytes()
+        # 재시작해서 99.0.0이 쓰이는 프로세스에서 되돌리기 → 그 프로세스가 끝날 때까지 파일 유지
+        out = self.fresh_start("reset_engine")
+        self.assertIn("99.0.0 (업데이트됨)", out)
+        self.assertIn('"restart": true', out)
+        self.assertEqual(Path(in_use).read_bytes(), before)
+        # 그다음 시작: 기본 엔진 + 옛 파일 정리
+        self.assertIn("(기본)", self.fresh_start())
+        self.assertFalse(os.path.exists(in_use))
+
+    def test_newer_update_while_updated_engine_runs(self):
+        self.update("99.0.0")
+        self.fresh_start()  # 99.0.0 적용
+        self.update("100.0.0")  # 새 이름으로 받는다
+        self.assertTrue(os.path.isfile(os.path.join(self.engine_dir(), "gallery_dl-99.0.0.whl")))
+        self.assertIn("100.0.0 (업데이트됨)", self.fresh_start())
+        self.assertFalse(os.path.exists(os.path.join(self.engine_dir(), "gallery_dl-99.0.0.whl")))
+
+    def test_reset_cancels_pending_update(self):
+        self.update("99.0.0")
+        result = json.loads(bridge.reset_engine())
+        self.assertEqual(result["restart"], False)  # 이 프로세스는 원래 기본 엔진
+        self.assertIn("(기본)", self.fresh_start())
+        self.assertIn("이미 기본", json.loads(bridge.reset_engine())["message"])
 
     def test_rejects_corrupt_download(self):
         wheel = self.make_wheel("99.0.0", os.path.join(self.tmp.name, "w.whl"))
         with self.fake_pypi("99.0.0", wheel, sha="0" * 64), self.assertRaises(RuntimeError):
             bridge.update_engine()
-        self.assertFalse(os.path.exists(os.path.join(self.files_dir, "engine", "gallery_dl.whl")))
+        self.assertFalse(os.path.exists(os.path.join(self.engine_dir(), "gallery_dl-99.0.0.whl")))
+        self.assertIn("(기본)", self.fresh_start())
 
     def test_already_latest(self):
         with self.fake_pypi("1.0.0", b""):
-            self.assertIn("이미 최신", bridge.update_engine())
+            result = json.loads(bridge.update_engine())
+        self.assertIn("이미 최신", result["message"])
+        self.assertFalse(result["restart"])
 
-    def test_broken_engine_file_is_ignored_on_start(self):
-        engine = os.path.join(self.files_dir, "engine")
-        os.makedirs(engine)
-        Path(engine, "gallery_dl.whl").write_bytes(b"not a zip")
-        code = (
-            f"import sys; sys.path.insert(0, {str(PY_SRC)!r}); import android_bridge as b; "
-            f"b.init({self.files_dir!r}); print(b.engine_version())"
-        )
-        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
-        self.assertIn("(기본)", out.stdout, out.stderr)
+    def test_broken_or_malicious_pointer_is_ignored(self):
+        os.makedirs(self.engine_dir())
+        Path(self.engine_dir(), "gallery_dl-9.whl").write_bytes(b"not a zip")
+        Path(self.engine_dir(), "current.txt").write_text("gallery_dl-9.whl")
+        self.assertIn("(기본)", self.fresh_start())
+        Path(self.engine_dir(), "current.txt").write_text("../../evil.whl")
+        self.assertIn("(기본)", self.fresh_start())
 
 
 if __name__ == "__main__":

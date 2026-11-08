@@ -3,5 +3,6 @@ build/
 local.properties
 *.iml
 .idea/
-# 서명 키 비밀번호 등 로컬 전용 설정
-keystore.properties
+.kotlin/
+# 앱 서명 키는 저장소에 올리지 않는다 (공개 저장소)
+signing/

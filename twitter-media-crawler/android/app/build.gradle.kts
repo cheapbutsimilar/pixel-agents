@@ -7,9 +7,10 @@ plugins {
     id("com.chaquo.python")
 }
 
-// 릴리스 서명: android/keystore.properties 가 있으면 그 키로, 없으면 디버그 키로 서명한다.
+// 릴리스 서명: 저장소의 이 앱 전용 키(signing/)로 서명한다. 키가 바뀌면 휴대폰에 덮어 설치(업데이트)가 안 되고,
+// 지우고 다시 설치하면 로그인과 받은 기록이 사라져 전부 다시 받게 되므로 키는 항상 같아야 한다.
 val keystoreProps = Properties().apply {
-    val file = rootProject.file("keystore.properties")
+    val file = rootProject.file("signing/signing.properties")
     if (file.exists()) file.inputStream().use { load(it) }
 }
 
@@ -43,7 +44,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            // 서명 키가 없으면 디버그 키로 몰래 대신 서명하지 않고 서명 안 된 APK(설치 불가)를 만든다
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
