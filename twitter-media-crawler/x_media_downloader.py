@@ -24,6 +24,7 @@ import os
 import queue
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -327,6 +328,30 @@ def load_completed_scopes(state_path: Path) -> list:
     return [s for s in scopes if isinstance(s, dict)] if isinstance(scopes, list) else []
 
 
+def forget_full_scans(state_path: Path) -> None:
+    """빠른 새로고침 자격을 없앤다 (다음 실행은 전체 확인)."""
+    try:
+        state_path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def check_history_file(archive_path: Path) -> None:
+    """받은 기록(sqlite)이 손상됐으면 ValueError. gallery-dl은 열지 못해도 경고만 하고 기록 없이 계속 받는다."""
+    if not archive_path.exists():
+        return
+    try:
+        con = sqlite3.connect(str(archive_path), timeout=30)
+        try:
+            row = con.execute("PRAGMA quick_check").fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        row = None
+    if not row or row[0] != "ok":
+        raise ValueError(HINTS["history"].format(path=archive_path))
+
+
 def record_full_scan(state_path: Path, scope: dict) -> None:
     scopes = load_completed_scopes(state_path)
     if scope not in scopes:
@@ -444,6 +469,10 @@ HINTS = {
     "engine": (
         "X에서 데이터를 받지 못했습니다. 인터넷 연결과 계정 아이디를 확인하고, 계속 실패하면 "
         "'엔진 업데이트'(또는 --upgrade-engine)로 gallery-dl을 최신 버전으로 올린 뒤 다시 시도하세요."
+    ),
+    "history": (
+        "받은 기록 파일이 손상돼서 멈췄습니다 (이대로 받으면 이미 받은 것도 전부 다시 받게 됩니다): {path}\n"
+        "이 파일을 지우고 다시 실행하세요. 저장 폴더에 그대로 있는 파일은 건너뜁니다."
     ),
 }
 # 시작 줄에 저장 폴더를 보여줄지 (안드로이드 앱은 사용자가 열 수 없는 내부 폴더라 숨긴다)
@@ -567,6 +596,7 @@ def download(
     is_post = split_post(opts.target) is not None
     quick = not is_post and opts.quick_refresh and scope_covered(load_completed_scopes(state_path), scope)
     config = build_config(opts, quick_refresh=quick)  # 입력 검증 — 실패하면 아무것도 만들지 않음
+    check_history_file(archive_path)
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     runner = runner or ProcessRunner()
     result = Result(quick=quick)
@@ -586,6 +616,8 @@ def download(
             result.errors += 1
         if kind in ("error", "warning") and any(marker in text for marker in _AUTH_ERROR_MARKERS):
             result.auth_error = True
+        if kind == "warning" and "Failed to open download archive" in text:
+            kind = "error"  # 기록 없이 계속 받으면 이미 받은 것도 다시 받으므로 오류로 보여준다
         on_event(kind, text)
 
     # 설정 파일에 로그인 쿠키가 들어가므로 본인만 읽을 수 있는 임시 파일(mkstemp는 0600)에 쓰고 끝나면 지운다
@@ -614,6 +646,10 @@ def download(
             pass
     result.stopped = runner.stopped
 
+    if is_post and result.downloaded > 0:
+        # 게시물 하나를 받으면 받은 기록에 '중간' 항목이 생겨, 빠른 새로고침이 새 게시물들 사이에서 일찍 멈출 수 있다.
+        # 그래서 그 계정의 다음 실행은 처음부터 끝까지 확인하게 한다.
+        forget_full_scans(state_path)
     if not quick and not is_post and result.returncode == 0 and not result.stopped:
         try:
             record_full_scan(state_path, scope)
@@ -730,6 +766,9 @@ def run_download_console(opts: Options) -> int:
         runner.stop()
         print("\n중지됨")
         return 130
+    except ValueError as exc:
+        print(f"실행 실패: {exc}", file=sys.stderr)
+        return 1
     except OSError as exc:
         print(f"실행 실패: {exc}", file=sys.stderr)
         if android and isinstance(exc, PermissionError):

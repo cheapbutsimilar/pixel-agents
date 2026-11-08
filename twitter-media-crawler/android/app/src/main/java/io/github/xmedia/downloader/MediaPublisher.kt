@@ -3,6 +3,7 @@ package io.github.xmedia.downloader
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.provider.MediaStore
 import java.io.File
 import java.io.IOException
@@ -26,10 +27,14 @@ object MediaPublisher {
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, file.name)
             put(MediaStore.MediaColumns.MIME_TYPE, mime)
-            put(MediaStore.MediaColumns.RELATIVE_PATH, Pure.relativePathFor(mime, folder))
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Pure.relativePathFor(mime, folder, Build.VERSION.SDK_INT))
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
-        val uri = resolver.insert(collection, values) ?: throw IOException("사진 앱에 항목을 만들지 못했습니다")
+        val uri = try {
+            resolver.insert(collection, values)
+        } catch (e: Exception) { // 허용되지 않는 폴더 등은 IllegalArgumentException으로 온다
+            throw IOException(e.message ?: e.javaClass.simpleName, e)
+        } ?: throw IOException("사진 앱에 항목을 만들지 못했습니다")
         try {
             val out = resolver.openOutputStream(uri) ?: throw IOException("사진 앱 파일을 열지 못했습니다")
             out.use { stream -> file.inputStream().use { it.copyTo(stream) } }

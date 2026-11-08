@@ -21,6 +21,9 @@ from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 PY_SRC = HERE.parent / "app" / "src" / "main" / "python"
+CORE_DIR = HERE.parent.parent  # x_media_downloader.py (앱 빌드 때 복사되는 공용 핵심 파일)
+sys.dont_write_bytecode = True  # 앱 소스 폴더에 __pycache__가 생겨 APK에 섞이지 않도록
+sys.path.insert(0, str(CORE_DIR))
 sys.path.insert(0, str(PY_SRC))
 sys.path.insert(0, str(HERE))
 
@@ -96,12 +99,12 @@ class BridgeTestBase(unittest.TestCase):
         MediaServer.delay = 0.0
         MediaServer.requests = []
 
-    def run_bridge(self, target, listener=None, scenario="normal", **opts):
+    def run_bridge(self, target, listener=None, scenario="normal", job_id=None, **opts):
         mock_x.install(self.base_url, scenario, **opts.pop("mock", {}))
         listener = listener or Listener()
         options = {"target": target, "auth_token": "a" * 40, "ct0": "csrf"}
         options.update(opts)
-        result = json.loads(bridge.run_download(self.staging, json.dumps(options), listener))
+        result = json.loads(bridge.run_download(self.staging, json.dumps(options), listener, job_id))
         return result, listener
 
     def staged_media(self):
@@ -173,6 +176,32 @@ class IsolationTest(BridgeTestBase):
         # 같은 프로세스에서 이어서 전체 확인: 앞 실행의 'skip: abort:20'이 남아 있으면 20에서 멈춘다
         full, _ = self.run_bridge("bookmarks", scenario="many", mock={"new": 2}, quick_refresh=False)
         self.assertEqual((full["downloaded"], full["skipped"], full["quick"]), (0, 32, False))
+
+    def test_per_run_caches_are_reset(self):
+        from gallery_dl.extractor import common
+
+        self.run_bridge("@nasa")
+        self.assertIn("UserByScreenName", [c["op"] for c in mock_x.STATE["calls"]])
+        common.CACHE_MEMORY["stale-key"] = ("value", 0)
+        self.run_bridge("@nasa")
+        # 두 번째 실행도 사용자 정보를 새로 묻는다 (프로세스가 살아 있는 동안 캐시가 영원히 남지 않음)
+        self.assertIn("UserByScreenName", [c["op"] for c in mock_x.STATE["calls"]])
+        self.assertNotIn("stale-key", common.CACHE_MEMORY)
+
+    def test_only_twitter_extractor_is_loaded(self):
+        from gallery_dl import extractor
+
+        self.run_bridge("bookmarks")
+        self.assertEqual(extractor.modules, ["twitter"])
+
+    def test_corrupt_history_stops_with_android_message(self):
+        history = Path(self.staging, ".download-history")
+        history.mkdir(parents=True)
+        Path(history, "bookmarks.sqlite3").write_bytes(b"garbage" * 200)
+        with self.assertRaises(ValueError) as ctx:
+            self.run_bridge("bookmarks")
+        self.assertIn("데이터 삭제", str(ctx.exception))
+        self.assertEqual(self.staged_media(), [])
 
     def test_global_hooks_restored_after_run(self):
         from gallery_dl import output
@@ -256,6 +285,46 @@ class StopTest(BridgeTestBase):
         self.assertEqual(other, {"ok": True})
         self.assertTrue(out["result"]["stopped"], out)
 
+    def test_stop_while_publishing_a_file_does_not_cause_duplicates(self):
+        """사진 앱으로 옮기는 중(onFile)에 중지해도, 그 파일은 기록돼서 다음에 다시 받지 않아야 한다."""
+        published = []
+
+        class StopDuringPublish(Listener):
+            def onFile(self, path, folder):  # noqa: N802
+                published.append(os.path.basename(path))
+                os.remove(path)  # 사진 앱으로 옮김
+                if len(published) == 1:  # 첫 파일을 옮기는 도중에 다른 스레드에서 중지
+                    t = threading.Thread(target=bridge.stop)
+                    t.start()
+                    t.join()
+
+        first, _ = self.run_bridge("bookmarks", StopDuringPublish())
+        self.assertTrue(first["stopped"])
+        second, lst = self.run_bridge("bookmarks", Listener(publish=True))
+        published += [os.path.basename(p) for p, _ in lst.files]
+        self.assertEqual(len(published), 4, published)
+        self.assertEqual(len(set(published)), 4, f"중복: {published}")
+        self.assertFalse(lst.kinds("error"), lst.kinds("error"))
+
+    def test_stop_before_the_job_starts_is_remembered(self):
+        """엔진 준비 중(작업이 시작되기 전)에 누른 중지도 놓치지 않아야 한다."""
+        self.assertTrue(bridge.stop(7))
+        result, lst = self.run_bridge("bookmarks", job_id=7)
+        self.assertTrue(result["stopped"])
+        self.assertEqual((result["downloaded"], lst.files), (0, []))
+        # 다른 작업에는 영향 없음
+        result, _ = self.run_bridge("bookmarks", job_id=8)
+        self.assertEqual((result["downloaded"], result["stopped"]), (4, False))
+
+    def test_stop_messages_are_not_errors(self):
+        MediaServer.delay = 0.7
+        lst = Listener()
+        thread, out = self._run_async(listener=lst)
+        self.assertTrue(lst.first_file.wait(20))
+        bridge.stop()
+        thread.join(20)
+        self.assertFalse(lst.kinds("error"), lst.kinds("error"))
+
     def test_second_run_while_running_is_rejected(self):
         MediaServer.delay = 0.5
         lst = Listener()
@@ -302,16 +371,29 @@ class EngineTest(BridgeTestBase):
     def engine_dir(self):
         return os.path.join(self.files_dir, "engine")
 
-    def fresh_start(self, *calls):
+    def fresh_start(self, *calls, bundled=""):
         """앱 재시작 흉내: 새 파이썬에서 init() 후 engine_version()과 추가 호출 결과를 출력."""
         extra = "".join(f"; print(b.{c}())" for c in calls)
         code = (
-            f"import sys; sys.path.insert(0, {str(PY_SRC)!r}); import android_bridge as b; "
-            f"b.init({self.files_dir!r}); print(b.engine_version()){extra}"
+            f"import sys; sys.dont_write_bytecode = True; sys.path[:0] = [{str(PY_SRC)!r}, {str(CORE_DIR)!r}]; "
+            f"import android_bridge as b; "
+            f"b.init({self.files_dir!r}, {bundled!r}); print(b.engine_version()){extra}"
         )
         out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
         self.assertEqual(out.returncode, 0, out.stderr)
         return out.stdout
+
+    def test_older_downloaded_engine_never_shadows_newer_app_engine(self):
+        """APK를 새로 설치해 앱 기본 엔진이 더 새로워지면, 예전에 받아 둔 엔진은 쓰지 않는다."""
+        self.update("99.0.0")
+        self.assertIn("(기본)", self.fresh_start(bundled="100.0.0"))
+        self.assertFalse(os.path.exists(os.path.join(self.engine_dir(), "gallery_dl-99.0.0.whl")))
+        self.update("101.0.0")
+        self.assertIn("101.0.0 (업데이트됨)", self.fresh_start(bundled="100.0.0"))
+
+    def test_prerelease_is_not_offered(self):
+        with self.fake_pypi("99.0.0rc1", b""):
+            self.assertFalse(json.loads(bridge.update_engine())["restart"])
 
     def test_update_applies_on_next_start(self):
         result = self.update("99.0.0")

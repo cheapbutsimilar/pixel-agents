@@ -36,11 +36,20 @@ ANDROID_HINTS = {
         "X에서 데이터를 받지 못했습니다. 인터넷 연결과 계정 아이디를 확인하고, 계속 실패하면 "
         "앱 아래쪽의 '엔진 업데이트'를 누른 뒤 다시 시도하세요."
     ),
+    "history": (
+        "받은 기록이 손상돼서 멈췄습니다 (이대로 받으면 이미 받은 것도 전부 다시 받게 됩니다). "
+        "휴대폰 설정 › 애플리케이션 › X 미디어 다운로더 › 저장공간 › 데이터 삭제로 초기화할 수 있습니다 "
+        "(로그인을 다시 해야 하고, 이미 받은 것도 다시 받습니다)."
+    ),
 }
 
-_state = {"files_dir": None, "engine_wheel": None}
+_state = {"files_dir": None, "engine_wheel": None, "bundled_version": ""}
 _run_lock = threading.Lock()  # 다운로드는 한 번에 하나만
-_current = {"runner": None}
+_engine_lock = threading.Lock()  # 엔진 업데이트/되돌리기도 한 번에 하나만
+# 중지 요청은 작업 번호(job_id)로 기억한다. 엔진이 아직 준비 중이라 runner가 없을 때 온 중지도 놓치지 않기 위해서.
+_stop_lock = threading.Lock()
+_stopped_jobs = set()
+_current = {"runner": None, "job": None}
 
 
 class StopRequested(BaseException):
@@ -52,9 +61,14 @@ class StopRequested(BaseException):
 # ---------------------------------------------------------------------------
 
 
-def init(files_dir: str) -> None:
-    """앱 시작 시 한 번. gallery_dl을 import하기 전에 불러야 업데이트된 엔진이 적용된다."""
+def init(files_dir: str, bundled_version: str = "") -> None:
+    """앱 시작 시 한 번. gallery_dl을 import하기 전에 불러야 업데이트된 엔진이 적용된다.
+
+    bundled_version: 앱(APK)에 들어 있는 gallery-dl 버전. 받아 둔 엔진이 이보다 새롭지 않으면 쓰지 않는다
+    (예: 새 APK로 업데이트해서 기본 엔진이 더 새로워진 경우).
+    """
     _state["files_dir"] = files_dir
+    _state["bundled_version"] = bundled_version
     os.environ["HOME"] = files_dir  # x_media_downloader가 import 시 Path.home()을 쓴다
     os.environ["XDG_CACHE_HOME"] = os.path.join(files_dir, "cache")
     tmp = os.path.join(files_dir, "tmp")
@@ -63,6 +77,9 @@ def init(files_dir: str) -> None:
 
     engine_dir = os.path.join(files_dir, ENGINE_DIR_NAME)
     chosen = _read_current(engine_dir)
+    if chosen and bundled_version and not _is_newer(_version_from_wheel_name(chosen), bundled_version):
+        _write_current(engine_dir, "")  # 앱에 들어 있는 엔진이 같거나 더 새롭다
+        chosen = ""
     wheel = os.path.join(engine_dir, chosen) if chosen else ""
     if "gallery_dl" not in sys.modules and wheel and os.path.isfile(wheel) and _wheel_ok(wheel):
         sys.path.insert(0, wheel)
@@ -145,8 +162,19 @@ def engine_version() -> str:
     return text
 
 
-def _version_tuple(text: str) -> tuple:
-    return tuple(int(n) for n in re.findall(r"\d+", text)[:4])
+def _final_version(text: str):
+    """정식 버전(예: 1.32.19)만 숫자 튜플로. 시험판(rc, dev 등)이나 이상한 값은 None."""
+    if not re.fullmatch(r"\d+(\.\d+)*", text or ""):
+        return None
+    parts = [int(n) for n in text.split(".")][:6]
+    return tuple(parts + [0] * (6 - len(parts)))
+
+
+def _is_newer(candidate: str, than: str) -> bool:
+    new, old = _final_version(candidate), _final_version(than)
+    if new is None:
+        return False
+    return old is None or new > old
 
 
 def _engine_result(message: str, restart: bool) -> str:
@@ -158,12 +186,22 @@ def update_engine() -> str:
 
     반환: JSON {"message": 사람이 읽을 결과, "restart": 다시 시작해야 적용되는지}. 실패하면 예외.
     """
+    if not _engine_lock.acquire(blocking=False):
+        raise RuntimeError("엔진 작업이 이미 진행 중입니다")
+    try:
+        return _update_engine()
+    finally:
+        _engine_lock.release()
+
+
+def _update_engine() -> str:
     from gallery_dl import version as current
 
     with urllib.request.urlopen(PYPI_URL, timeout=NETWORK_TIMEOUT) as resp:
         info = json.load(resp)
     latest = info["info"]["version"]
-    if _version_tuple(latest) <= _version_tuple(current.__version__):
+    if not _is_newer(latest, current.__version__):
+        # 시험판(rc 등)은 받지 않는다. 지금 쓰는 버전보다 새 정식 버전이 있을 때만.
         return _engine_result(f"이미 최신입니다 (gallery-dl {current.__version__})", False)
     engine_dir = _engine_dir()
     pending = _read_current(engine_dir)
@@ -205,6 +243,15 @@ def reset_engine() -> str:
 
     반환: update_engine()과 같은 JSON.
     """
+    if not _engine_lock.acquire(blocking=False):
+        raise RuntimeError("엔진 작업이 이미 진행 중입니다")
+    try:
+        return _reset_engine()
+    finally:
+        _engine_lock.release()
+
+
+def _reset_engine() -> str:
     engine_dir = _engine_dir()
     pending = _read_current(engine_dir)
     if not pending and not _state["engine_wheel"]:
@@ -252,16 +299,40 @@ class _LineHandler(logging.Handler):
             pass
 
 
+def _prepare_gallery_dl_once() -> None:
+    """한 번만: 트위터 추출기만 쓰도록 등록 범위를 줄인다 (첫 실행 때 400여 개 모듈을 불러오지 않도록)."""
+    if _state.get("extractors_ready"):
+        return
+    from gallery_dl import extractor
+
+    extractor.modules = ["twitter"]
+    _state["extractors_ready"] = True
+
+
+def _reset_per_run_state() -> None:
+    """PC 버전은 실행마다 새 프로세스라 자연히 지워지는 상태를, 같은 프로세스 안에서 매번 지운다."""
+    from gallery_dl import util
+    from gallery_dl.extractor import common, twitter
+
+    util.FLAGS.clear()  # 이전 실행의 중지 요청이 남지 않도록
+    common.CACHE_MEMORY.clear()  # 사용자 정보 등 메모리 캐시 (만료 없이 남는다)
+    twitter.TwitterAPI.client_transaction = None  # X 요청 서명 키: 실행마다 새로 (디스크 캐시는 3시간 만료)
+
+
 def _make_runner_class():
     import x_media_downloader as xmd
 
     class InProcessRunner(xmd.ProcessRunner):
-        """x_media_downloader.download()가 넘기는 명령줄을 해석해 gallery-dl을 같은 프로세스에서 실행한다."""
+        """x_media_downloader.download()가 넘기는 명령줄을 해석해 gallery-dl을 같은 프로세스에서 실행한다.
+
+        중지는 gallery-dl이 스스로 확인하는 FLAGS로 한다: 받는 중인 파일은 다음 데이터 조각에서 멈추고(.part로 남아
+        다음에 이어 받음), 끝난 파일은 받은 기록에 적힌 다음에 작업이 끝난다. 임의의 순간에 예외를 끼워 넣으면
+        '사진 앱으로 옮겼지만 기록은 안 된' 상태가 생겨 다음에 중복으로 받으므로 그렇게 하지 않는다.
+        """
 
         def __init__(self):
             super().__init__()
             self._stop_event = threading.Event()
-            self._thread_id = None
 
         def run(self, cmd, on_line):
             config_path = cmd[cmd.index("-c") + 1]
@@ -269,65 +340,79 @@ def _make_runner_class():
             with self._lock:
                 if self.stopped:
                     return -1
-                self._thread_id = threading.get_ident()
 
-            from gallery_dl import config, exception, job, output
+            from gallery_dl import config, exception, extractor, job, output, util
 
             _setup_logging_once()
+            _prepare_gallery_dl_once()
+            _reset_per_run_state()
             # 이전 실행의 설정(예: 빠른 새로고침의 skip)이 남지 않도록 매번 비우고 다시 읽는다
             config.clear()
             config.load([config_path], strict=True)
-            config.set(("cache",), "file", os.path.join(_files_dir(), "cache", "gallery-dl.sqlite3"))
             os.makedirs(os.path.join(_files_dir(), "cache"), exist_ok=True)
+            config.set(("cache",), "file", os.path.join(_files_dir(), "cache", "gallery-dl.sqlite3"))
+
+            extr = extractor.find(url)
+            if extr is None:
+                on_line(f"[gallery-dl][error] 지원하지 않는 주소입니다: {url}")
+                return 64
+
+            stop_event = self._stop_event
+            saved_write, saved_sleep = output.stdout_write, time.sleep
+            download_thread = threading.get_ident()
+
+            def emit(line):
+                # 중지로 받다 만 파일은 gallery-dl이 'Failed to download'로 기록하지만 실패가 아니다
+                if stop_event.is_set() and "Failed to download" in line:
+                    line = "[download][info] 중지: 받다 만 파일은 다음에 이어서 받습니다"
+                on_line(line)
 
             def write(text):
                 for line in text.splitlines():
                     if line.strip():
-                        on_line(line)
-
-            saved_write, saved_sleep = output.stdout_write, time.sleep
-            download_thread = threading.get_ident()
+                        emit(line)
 
             def interruptible_sleep(seconds):
                 # 요청 한도 대기(최대 15분)도 중지 버튼에 바로 반응하도록. time.sleep은 프로세스 전체에서
                 # 공유되므로 다운로드 스레드만 바꾸고, 다른 스레드는 원래 sleep을 그대로 쓴다.
                 if threading.get_ident() != download_thread:
                     return saved_sleep(seconds)
-                if self._stop_event.wait(max(0.0, seconds)):
+                if stop_event.wait(max(0.0, seconds)):
                     raise StopRequested()
-            handler = _LineHandler(on_line)
+
+            handler = _LineHandler(emit)
             root = logging.getLogger()
             saved_level = root.level
-            output.stdout_write = write
-            time.sleep = interruptible_sleep
-            root.addHandler(handler)
-            root.setLevel(logging.INFO)
             try:
-                return job.DownloadJob(url).run()
-            except exception.NoExtractorError:
-                on_line(f"[gallery-dl][error] 지원하지 않는 주소입니다: {url}")
-                return 64
+                output.stdout_write = write
+                time.sleep = interruptible_sleep
+                root.addHandler(handler)
+                root.setLevel(logging.INFO)
+                if self.stopped:  # 준비하는 사이에 중지됨
+                    return 130
+                status = job.DownloadJob(extr).run()
+                return 130 if stop_event.is_set() else status
+            except exception.TerminateExtraction:
+                return 130 if stop_event.is_set() else 0
             except exception.ControlException:
-                return 0
+                return 130 if stop_event.is_set() else 0
             except StopRequested:
                 return 130
             finally:
-                with self._lock:
-                    self._thread_id = None
                 output.stdout_write, time.sleep = saved_write, saved_sleep
                 root.removeHandler(handler)
                 root.setLevel(saved_level)
+                util.FLAGS.clear()
 
         def stop(self):
             with self._lock:
                 self.stopped = True
                 self._stop_event.set()
-                if self._thread_id is not None:
-                    import ctypes
-
-                    ctypes.pythonapi.PyThreadState_SetAsyncExc(
-                        ctypes.c_ulong(self._thread_id), ctypes.py_object(StopRequested)
-                    )
+            if "gallery_dl.util" in sys.modules:
+                flags = sys.modules["gallery_dl.util"].FLAGS
+                flags.DOWNLOAD = False  # 받는 중인 파일: 다음 데이터 조각에서 멈춤 (.part 유지)
+                flags.FILE = "terminate"  # 지금 파일을 마무리(기록)한 다음 끝냄
+                flags.POST = "terminate"
 
     return InProcessRunner
 
@@ -339,14 +424,16 @@ def parse_target(raw: str) -> str:
     return xmd.parse_target(raw)
 
 
-def run_download(staging_dir: str, options_json: str, listener) -> str:
+def run_download(staging_dir: str, options_json: str, listener, job_id=None) -> str:
     """다운로드를 실행하고 결과를 JSON 문자열로 돌려준다. 호출한 스레드에서 끝날 때까지 실행된다.
 
     options_json: {"target": 입력값, "media", "retweets", "quick_refresh", "auth_token", "ct0"}
     listener: Kotlin 객체. onEvent(kind, text) / onFile(absolute_path, folder) 를 부른다.
       - kind: file / skip / error / warning / info (PC 버전과 같음)
       - onFile: 받은 파일을 사진 앱(MediaStore)에 옮기라는 신호. folder는 bookmarks 또는 계정 아이디.
+    job_id: 이 작업의 번호. stop(job_id)가 이 함수보다 먼저 불렸어도 시작하자마자 멈춘다.
     """
+    job = None if job_id is None else str(job_id)
     import x_media_downloader as xmd
 
     xmd.HINTS.update(ANDROID_HINTS)
@@ -376,13 +463,18 @@ def run_download(staging_dir: str, options_json: str, listener) -> str:
             listener.onEvent(kind, text)
 
         runner = _make_runner_class()()
-        _current["runner"] = runner
+        with _stop_lock:
+            if job is not None and job in _stopped_jobs:
+                runner.stopped = True  # 엔진 준비 중에 이미 중지됨 → 실행하지 않고 바로 '중지됨'
+            _current.update(runner=runner, job=job)
         try:
             result = xmd.download(opts, on_event, runner)
         except StopRequested:  # 중지 요청이 gallery-dl 밖(정리 코드)에서 도착한 경우
             result = xmd.Result(returncode=130, stopped=True)
         finally:
-            _current["runner"] = None
+            with _stop_lock:
+                _current.update(runner=None, job=None)
+                _stopped_jobs.discard(job)
         return json.dumps(
             {
                 "target": opts.target,
@@ -401,9 +493,17 @@ def run_download(staging_dir: str, options_json: str, listener) -> str:
         _run_lock.release()
 
 
-def stop() -> bool:
-    runner = _current["runner"]
-    if runner is None:
-        return False
-    runner.stop()
-    return True
+def stop(job_id=None) -> bool:
+    """중지 요청. job_id가 있으면 그 작업만 (아직 시작 전이면 시작하자마자 멈추도록 기억해 둔다).
+
+    반환: 실행 중인 작업을 멈췄거나 중지를 예약했으면 True.
+    """
+    job = None if job_id is None else str(job_id)
+    with _stop_lock:
+        if job is not None:
+            _stopped_jobs.add(job)
+        runner = _current["runner"]
+        if runner is not None and (job is None or _current["job"] == job):
+            runner.stop()
+            return True
+    return job is not None

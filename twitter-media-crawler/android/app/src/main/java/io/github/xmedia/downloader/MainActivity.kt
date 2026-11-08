@@ -6,23 +6,24 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings as AndroidSettings
 import android.text.InputType
+import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import com.chaquo.python.PyException
+import androidx.core.app.NotificationManagerCompat
 import io.github.xmedia.downloader.databinding.ActivityMainBinding
-import kotlin.system.exitProcess
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var settings: Settings
     private val main = Handler(Looper.getMainLooper())
     private val stateListener: () -> Unit = { render() }
-    @Volatile private var engineBusy = false
+    private var wasEngineBusy = false
 
     private val loginLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         renderLogin()
@@ -44,6 +45,12 @@ class MainActivity : AppCompatActivity() {
         binding.btnStop.setOnClickListener { DownloadService.stop(this) }
         binding.btnEngineUpdate.setOnClickListener { updateEngine() }
         binding.btnEngineReset.setOnClickListener { resetEngine() }
+        binding.btnNotifSettings.setOnClickListener {
+            startActivity(
+                Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(AndroidSettings.EXTRA_APP_PACKAGE, packageName)
+            )
+        }
 
         askNotificationPermissionOnce()
         loadEngineVersion()
@@ -141,7 +148,7 @@ class MainActivity : AppCompatActivity() {
         }
         AlertDialog.Builder(this)
             .setTitle("쿠키 직접 입력")
-            .setMessage("앱 안 로그인이 안 될 때만 쓰세요. PC 브라우저에서 x.com 로그인 → F12 → Application → Cookies 에서 두 값을 복사합니다.")
+            .setMessage("앱 안 로그인이 안 될 때만 쓰세요. PC 브라우저에서 x.com 로그인 → F12 → Application → Cookies에서 두 값을 복사합니다.")
             .setView(box)
             .setPositiveButton("저장") { _, _ ->
                 val t = Pure.cleanCookieValue(token.text.toString(), "auth_token")
@@ -184,13 +191,25 @@ class MainActivity : AppCompatActivity() {
 
     private fun render() {
         val running = DownloadState.running
-        binding.btnStart.isEnabled = !running
+        val engineBusy = EngineTasks.busy
+        binding.btnStart.isEnabled = !running && !engineBusy
         binding.btnStop.isEnabled = running && !DownloadState.stopping
         binding.btnEngineUpdate.isEnabled = !running && !engineBusy
         binding.btnEngineReset.isEnabled = !running && !engineBusy
         val queued = DownloadState.queued
         binding.tvStatus.text = DownloadState.status + if (running && queued > 0) " (대기 ${queued}개)" else ""
         binding.tvLog.text = DownloadState.logText().ifEmpty { "아직 기록이 없습니다" }
+        // 알림이 꺼져 있으면 공유로 시작한 다운로드의 진행·결과를 볼 수 없으므로 알려준다
+        binding.notifWarning.visibility =
+            if (NotificationManagerCompat.from(this).areNotificationsEnabled()) View.GONE else View.VISIBLE
+
+        if (engineBusy) {
+            binding.tvEngine.text = EngineTasks.busyText
+        } else if (wasEngineBusy) {
+            loadEngineVersion()
+        }
+        wasEngineBusy = engineBusy
+        EngineTasks.takeResult()?.let { showEngineResult(it) }
     }
 
     private fun askNotificationPermissionOnce() {
@@ -213,34 +232,21 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    private fun showEngineResult(result: EngineTasks.Result) {
+        val dialog = AlertDialog.Builder(this).setMessage(result.message)
+        if (result.restart) {
+            dialog.setPositiveButton("지금 다시 시작") { _, _ -> restartApp() }
+            dialog.setNegativeButton("나중에", null)
+        } else {
+            dialog.setPositiveButton("확인", null)
+        }
+        dialog.show()
+    }
+
     private fun runEngineTask(busyText: String, call: String) {
-        engineBusy = true
-        render()
-        binding.tvEngine.text = busyText
-        Thread {
-            val (ok, message) = try {
-                true to Engine.bridge(applicationContext).callAttr(call).toString()
-            } catch (e: PyException) {
-                false to "실패: ${Pure.pythonErrorMessage(e.message)}"
-            } catch (e: Exception) {
-                false to "실패: ${e.message}"
-            }
-            main.post {
-                engineBusy = false
-                if (isDestroyed) return@post
-                render()
-                loadEngineVersion()
-                val needsRestart = ok && message.contains("다시 시작")
-                val dialog = AlertDialog.Builder(this).setMessage(message)
-                if (needsRestart) {
-                    dialog.setPositiveButton("지금 다시 시작") { _, _ -> restartApp() }
-                    dialog.setNegativeButton("나중에", null)
-                } else {
-                    dialog.setPositiveButton("확인", null)
-                }
-                dialog.show()
-            }
-        }.start()
+        if (!EngineTasks.start(this, busyText, call)) {
+            Toast.makeText(this, "엔진 작업이 이미 진행 중입니다", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun updateEngine() = runEngineTask("엔진: 최신 버전 확인 중…", "update_engine")
@@ -259,9 +265,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "다운로드가 끝난 뒤에 다시 시작하세요", Toast.LENGTH_LONG).show()
             return
         }
-        val intent = Intent(this, MainActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-        startActivity(intent)
-        exitProcess(0)
+        RestartActivity.restart(this)
     }
 }

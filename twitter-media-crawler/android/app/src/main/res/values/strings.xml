@@ -23,6 +23,9 @@
     <string name="opt_quick">빠른 새로고침 (한 번 전체를 받은 뒤엔 새 것만 확인)</string>
     <string name="save_location">저장 위치: 갤러리의 \'bookmarks\' 앨범 또는 계정 아이디 이름의 앨범 (내 파일 › Pictures › XMedia). 한 번 받은 건 옮기거나 지워도 다시 받지 않습니다.</string>
 
+    <string name="notif_off">알림이 꺼져 있어서, X 앱에서 공유로 시작한 다운로드의 진행 상황과 결과를 볼 수 없습니다.</string>
+    <string name="btn_notif_settings">알림 켜기</string>
+
     <string name="btn_start">다운로드 시작</string>
     <string name="btn_stop">중지</string>
 

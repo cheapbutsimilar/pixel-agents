@@ -43,9 +43,16 @@ object Pure {
             else -> "application/octet-stream"
         }
 
-    /** MediaStore RELATIVE_PATH. 사진·동영상은 Pictures, 그 밖의 파일은 Download 아래에 둔다. */
-    fun relativePathFor(mime: String, folder: String): String {
-        val top = if (mime.startsWith("image/") || mime.startsWith("video/")) "Pictures" else "Download"
+    /**
+     * MediaStore RELATIVE_PATH. 사진·동영상은 Pictures, 그 밖의 파일은 Download 아래에 둔다.
+     * 안드로이드 10(API 29)은 동영상을 Pictures에 둘 수 없어서(DCIM·Movies만 허용) Movies를 쓴다.
+     */
+    fun relativePathFor(mime: String, folder: String, sdkInt: Int = 35): String {
+        val top = when {
+            mime.startsWith("video/") && sdkInt < 30 -> "Movies"
+            mime.startsWith("image/") || mime.startsWith("video/") -> "Pictures"
+            else -> "Download"
+        }
         val safeFolder = sanitizeFolder(folder)
         return if (safeFolder.isEmpty()) "$top/$ALBUM_ROOT" else "$top/$ALBUM_ROOT/$safeFolder"
     }

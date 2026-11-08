@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
+import androidx.core.app.NotificationManagerCompat
 
 /**
  * X 앱 등에서 '공유 → X 미디어 다운로더'를 고르면 열리는 보이지 않는 화면.
@@ -25,7 +26,13 @@ class ShareActivity : Activity() {
             }
             else -> {
                 DownloadService.start(this, text)
-                toast("다운로드를 시작합니다. 진행 상황은 알림에서 볼 수 있어요")
+                toast(
+                    if (NotificationManagerCompat.from(this).areNotificationsEnabled()) {
+                        "다운로드를 시작합니다. 진행 상황은 알림에서 볼 수 있어요"
+                    } else {
+                        "다운로드를 시작합니다. 진행 상황은 앱을 열면 볼 수 있어요"
+                    }
+                )
             }
         }
         finish()

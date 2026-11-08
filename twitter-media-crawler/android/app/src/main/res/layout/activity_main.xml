@@ -11,6 +11,25 @@
         android:orientation="vertical"
         android:padding="12dp">
 
+        <!-- 알림이 꺼져 있을 때만 보인다 -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/notifWarning"
+            style="@style/Card"
+            android:visibility="gone">
+            <LinearLayout style="@style/CardBody">
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/notif_off" />
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnNotifSettings"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/btn_notif_settings" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- 1. 로그인 -->
         <com.google.android.material.card.MaterialCardView style="@style/Card">
             <LinearLayout style="@style/CardBody">

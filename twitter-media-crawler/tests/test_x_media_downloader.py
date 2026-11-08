@@ -389,6 +389,29 @@ class QuickRefreshGatingTest(unittest.TestCase):
             self.run_once(out, target="nasa/status/42")
             self.assertFalse(self.run_once(out, target="nasa")[0].quick, "게시물 하나 받은 것을 계정 전체 받기로 기록하면 안 됨")
 
+    def test_downloading_a_post_resets_quick_refresh_for_that_account(self):
+        with tempfile.TemporaryDirectory() as out:
+            self.run_once(out, target="nasa")
+            self.assertTrue(self.run_once(out, target="nasa")[0].quick)
+            # 받은 게 없으면 그대로
+            self.run_once(out, target="nasa/status/1")
+            self.assertTrue(self.run_once(out, target="nasa")[0].quick)
+            # 새로 받으면 다음 계정 실행은 전체 확인
+            runner = FakeRunner([os.path.join(str(Path(out).resolve()), "nasa", "x.jpg")])
+            xmd.download(make_opts(output_dir=out, target="nasa/status/2"), lambda k, t: None, runner)
+            self.assertFalse(self.run_once(out, target="nasa")[0].quick)
+
+    def test_corrupt_history_stops_before_running(self):
+        with tempfile.TemporaryDirectory() as out:
+            archive, _ = xmd.history_paths(Path(out).resolve(), "nasa")
+            archive.parent.mkdir(parents=True)
+            archive.write_bytes(b"this is not a sqlite database at all" * 50)
+            runner = FakeRunner([])
+            with self.assertRaises(ValueError) as ctx:
+                xmd.download(make_opts(output_dir=out, target="nasa"), lambda k, t: None, runner)
+            self.assertIn("손상", str(ctx.exception))
+            self.assertIsNone(runner.config_path)  # 실행하지 않았다
+
     def test_quick_refresh_off_always_full(self):
         with tempfile.TemporaryDirectory() as out:
             self.run_once(out, target="nasa")

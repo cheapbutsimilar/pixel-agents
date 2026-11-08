@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -29,6 +30,7 @@ class LoginActivity : AppCompatActivity() {
     private lateinit var binding: ActivityLoginBinding
     private val handler = Handler(Looper.getMainLooper())
     private var done = false
+    private var webGone = false
 
     private val poll = object : Runnable {
         override fun run() {
@@ -64,6 +66,22 @@ class LoginActivity : AppCompatActivity() {
                 binding.progress.visibility = View.GONE
                 checkLoggedIn()
             }
+
+            // 2단계 인증 앱으로 갔다 오는 사이 시스템이 웹 화면을 정리하면, 기본 동작은 앱 전체 종료(받는 중인
+            // 다운로드 포함)다. 로그인 화면만 닫고 앱은 살린다.
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                if (checkLoggedIn()) return true
+                (view.parent as? android.view.ViewGroup)?.removeView(view)
+                view.destroy()
+                webGone = true
+                Toast.makeText(
+                    this@LoginActivity,
+                    "로그인 화면이 닫혔습니다. 'X 로그인'을 다시 눌러 주세요",
+                    Toast.LENGTH_LONG,
+                ).show()
+                finish()
+                return true
+            }
         }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -86,8 +104,8 @@ class LoginActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        handler.removeCallbacks(poll)
-        binding.webView.destroy()
+        handler.removeCallbacksAndMessages(null)
+        if (!webGone) binding.webView.destroy()
         super.onDestroy()
     }
 

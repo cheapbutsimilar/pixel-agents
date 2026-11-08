@@ -6,3 +6,4 @@ local.properties
 .kotlin/
 # 앱 서명 키는 저장소에 올리지 않는다 (공개 저장소)
 signing/
+__pycache__/

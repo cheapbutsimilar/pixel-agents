@@ -191,7 +191,7 @@ run_windows.bat         Windows 실행기 (.venv 생성 + 설치 + 실행)
 run_mac_linux.sh        macOS/Linux/안드로이드(Termux) 실행기
 setup_android.sh        안드로이드 Termux 설치·업데이트 (앱 내려받기, 엔진 설치, 홈 화면 버튼)
 android/                안드로이드 앱 (Kotlin + Chaquopy로 파이썬·gallery-dl 내장)
-  app/src/main/python/  android_bridge.py (gallery-dl을 앱 안에서 실행) + x_media_downloader.py (위 파일 링크)
+  app/src/main/python/  android_bridge.py (gallery-dl을 앱 안에서 실행). x_media_downloader.py는 빌드 때 복사해 넣음
   pytests/              앱 엔진 테스트 (실제 gallery-dl + 가짜 X API)
   signing/              앱 서명 키 (저장소에 올리지 않음. 업데이트 설치가 되려면 항상 같은 키여야 함)
   release/              배포용 APK

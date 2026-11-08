@@ -36,6 +36,20 @@ object DownloadState {
         changed()
     }
 
+    /** 서비스가 요청을 받은 직후. 엔진 준비(첫 실행 땐 몇 초) 동안에도 '진행 중'으로 보이게 한다. */
+    @Synchronized
+    fun preparing() {
+        if (!running) {
+            running = true
+            stopping = false
+            status = "준비 중… (처음에는 엔진을 여느라 몇 초 걸립니다)"
+        }
+        changed()
+    }
+
+    /** 화면 갱신만 요청 (엔진 작업 결과 등). */
+    fun touch() = changed()
+
     @Synchronized
     fun begin(targetLabel: String) {
         running = true

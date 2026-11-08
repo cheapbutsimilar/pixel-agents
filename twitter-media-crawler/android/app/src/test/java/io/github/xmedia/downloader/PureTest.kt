@@ -47,6 +47,10 @@ class PureTest {
         assertEquals("Pictures/XMedia/nasa", Pure.relativePathFor("video/mp4", "nasa"))
         assertEquals("Download/XMedia/nasa", Pure.relativePathFor("application/octet-stream", "nasa"))
         assertEquals("Pictures/XMedia", Pure.relativePathFor("image/png", ""))
+        // 안드로이드 10은 동영상을 Pictures에 둘 수 없다
+        assertEquals("Movies/XMedia/nasa", Pure.relativePathFor("video/mp4", "nasa", sdkInt = 29))
+        assertEquals("Pictures/XMedia/nasa", Pure.relativePathFor("image/jpeg", "nasa", sdkInt = 29))
+        assertEquals("Pictures/XMedia/nasa", Pure.relativePathFor("video/mp4", "nasa", sdkInt = 30))
         // 경로 조작 방지
         assertEquals("Pictures/XMedia/_.._evil", Pure.relativePathFor("image/png", "/../evil"))
         assertEquals("Pictures/XMedia", Pure.relativePathFor("image/png", ".."))
