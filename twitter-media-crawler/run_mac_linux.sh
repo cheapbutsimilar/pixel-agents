@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# X 미디어 다운로더 실행 (macOS / Linux)
-#   bash run_mac_linux.sh              → GUI
+# X 미디어 다운로더 실행 (macOS / Linux / 안드로이드 Termux)
+#   bash run_mac_linux.sh              → GUI (휴대폰·서버에서는 글자 메뉴)
 #   bash run_mac_linux.sh bookmarks    → 명령줄 모드 (옵션은 --help)
 set -euo pipefail
 cd "$(dirname "$0")"

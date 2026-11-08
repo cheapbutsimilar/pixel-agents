@@ -10,7 +10,7 @@ X 내부 API가 바뀌어 다운로드가 실패하면 gallery-dl만 최신으�
     python -m pip install --upgrade gallery-dl
 
 사용법:
-    python x_media_downloader.py                  # GUI 실행
+    python x_media_downloader.py                  # GUI 실행 (휴대폰·서버에서는 글자 메뉴)
     python x_media_downloader.py bookmarks        # 내 북마크 (CLI)
     python x_media_downloader.py @계정아이디      # 특정 계정 (CLI)
     python x_media_downloader.py --help           # 전체 옵션
@@ -23,6 +23,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -42,7 +43,23 @@ except ImportError:  # 일부 리눅스 배포판은 python3-tk 패키지를 따
 
 APP_TITLE = "X 미디어 다운로더"
 SETTINGS_FILE = Path.home() / ".x-media-downloader" / "settings.json"
-DEFAULT_OUTPUT_DIR = str(Path.home() / "Downloads" / "x-media")
+
+# 안드로이드 공용 '다운로드' 폴더. Termux 홈 폴더는 앱 전용이라 갤러리·내 파일 앱에서 보이지 않는다.
+ANDROID_DOWNLOAD_DIR = Path("/storage/emulated/0/Download")
+
+
+def is_android() -> bool:
+    """안드로이드(Termux)에서 실행 중인지."""
+    return hasattr(sys, "getandroidapilevel") or "com.termux" in os.environ.get("PREFIX", "")
+
+
+def default_output_dir() -> str:
+    if is_android():
+        return str(ANDROID_DOWNLOAD_DIR / "x-media")
+    return str(Path.home() / "Downloads" / "x-media")
+
+
+DEFAULT_OUTPUT_DIR = default_output_dir()
 
 BOOKMARKS = "bookmarks"
 
@@ -490,14 +507,15 @@ def download(
 
     def handle(line: str) -> None:
         kind, text = classify_line(line)
-        if kind == "file":
-            result.downloaded += 1
-            try:
+        if kind in ("file", "skip"):
+            if kind == "file":
+                result.downloaded += 1
+            else:
+                result.skipped += 1
+            try:  # 저장 폴더 기준 상대 경로로 짧게 표시 (휴대폰 화면에서도 읽기 쉽게)
                 text = str(Path(text).relative_to(base_dir))
             except ValueError:
                 pass
-        elif kind == "skip":
-            result.skipped += 1
         elif kind == "error":
             result.errors += 1
         on_event(kind, text)
@@ -543,7 +561,10 @@ def download(
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="x_media_downloader.py",
-        description="X(트위터) 북마크 또는 특정 계정의 사진/동영상을 내려받습니다. 인자 없이 실행하면 GUI가 열립니다.",
+        description=(
+            "X(트위터) 북마크 또는 특정 계정의 사진/동영상을 내려받습니다. "
+            "인자 없이 실행하면 GUI가, GUI를 쓸 수 없는 휴대폰(Termux)·서버에서는 글자 메뉴가 열립니다."
+        ),
         epilog=(
             "로그인 쿠키를 한 번 GUI나 --save로 저장해 두면 이후엔 생략할 수 있습니다. "
             "auth_token은 환경변수 X_AUTH_TOKEN / X_CT0 로도 줄 수 있습니다."
@@ -568,6 +589,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     auth.add_argument("--cookies", metavar="파일", help="Netscape 형식 cookies.txt 파일")
     p.add_argument("--save", action="store_true", help="이번 설정(로그인 쿠키 포함)을 저장해 다음에 재사용")
     p.add_argument("--gui", action="store_true", help="GUI 실행")
+    p.add_argument("--menu", action="store_true", help="글자 메뉴로 실행")
     p.add_argument("--upgrade-engine", action="store_true", help="gallery-dl을 최신 버전으로 업데이트")
     return p
 
@@ -598,21 +620,25 @@ def options_from_args(args: argparse.Namespace, base: Options) -> Options:
 _CLI_PREFIX = {"file": "[받음] ", "skip": "[건너뜀] ", "error": "", "warning": "", "info": ""}
 
 
-def run_cli(args: argparse.Namespace) -> int:
+def _console_safe_output() -> None:
     # 한국어 Windows 콘솔(cp949)에서 이모지 등이 섞인 로그가 출력 오류를 내지 않도록
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
-    try:
-        opts = options_from_args(args, load_settings())
-        build_config(opts)  # 실행 전에 입력 검증
-    except ValueError as exc:
-        print(f"입력 오류: {exc}", file=sys.stderr)
-        return 2
-    if args.save:
-        save_settings(opts)
-        print(f"설정 저장: {SETTINGS_FILE}")
 
+
+def _termux_command(name: str) -> None:
+    """Termux 보조 명령(termux-wake-lock 등)이 있으면 실행한다. 실패해도 다운로드에는 영향 없음."""
+    if not shutil.which(name):
+        return
+    try:
+        subprocess.run([name], timeout=15, stdin=subprocess.DEVNULL, capture_output=True)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def run_download_console(opts: Options) -> int:
+    """터미널(명령줄·글자 메뉴)에서 다운로드를 실행하고 진행 상황을 출력한다."""
     if engine_version() is None:
         print("gallery-dl이 설치되어 있지 않습니다:  python -m pip install gallery-dl", file=sys.stderr)
         return 2
@@ -622,6 +648,10 @@ def run_cli(args: argparse.Namespace) -> int:
     def on_event(kind: str, text: str) -> None:
         print(_CLI_PREFIX[kind] + text, flush=True)
 
+    # 휴대폰 화면이 꺼져도 다운로드가 멈추지 않도록 (Termux 알림에 표시됨)
+    android = is_android()
+    if android:
+        _termux_command("termux-wake-lock")
     try:
         result = download(opts, on_event, runner)
     except KeyboardInterrupt:
@@ -630,9 +660,144 @@ def run_cli(args: argparse.Namespace) -> int:
         return 130
     except OSError as exc:
         print(f"실행 실패: {exc}", file=sys.stderr)
+        if android and isinstance(exc, PermissionError):
+            print("저장소 권한이 없습니다. Termux에서 termux-setup-storage 를 실행하고 '허용'을 누르세요.", file=sys.stderr)
         return 1
+    finally:
+        if android:
+            _termux_command("termux-wake-unlock")
     print(result.summary())
     return 0 if result.returncode == 0 else 1
+
+
+def run_cli(args: argparse.Namespace) -> int:
+    _console_safe_output()
+    try:
+        opts = options_from_args(args, load_settings())
+        build_config(opts)  # 실행 전에 입력 검증
+    except ValueError as exc:
+        print(f"입력 오류: {exc}", file=sys.stderr)
+        return 2
+    if args.save:
+        save_settings(opts)
+        print(f"설정 저장: {SETTINGS_FILE}")
+    return run_download_console(opts)
+
+
+# ---------------------------------------------------------------------------
+# 글자 메뉴 (휴대폰 Termux·서버처럼 GUI를 쓸 수 없는 곳)
+# ---------------------------------------------------------------------------
+
+MEDIA_LABELS = {MEDIA_ALL: "사진 + 동영상", MEDIA_PHOTOS: "사진만", MEDIA_VIDEOS: "동영상만(GIF 포함)"}
+_YES = ("y", "yes", "ㅇ", "예", "네", "응")
+
+
+def _ask(prompt: str, default: str = "") -> str:
+    suffix = f" [{default}]" if default else ""
+    return input(f"{prompt}{suffix}: ").strip() or default
+
+
+def _ask_yes(prompt: str, default: bool) -> bool:
+    answer = input(f"{prompt} ({'Y/n' if default else 'y/N'}): ").strip().lower()
+    return default if not answer else answer in _YES
+
+
+def _has_login(opts: Options) -> bool:
+    try:
+        cookies_setting(opts)
+    except ValueError:
+        return False
+    return True
+
+
+def _menu_login(opts: Options) -> None:
+    print(
+        "\n[로그인 쿠키 입력]\n"
+        "x.com에 로그인된 브라우저의 쿠키 auth_token, ct0 값이 필요합니다. (README '로그인 쿠키 준비' 참고)\n"
+        "Termux에서는 화면을 길게 눌러 '붙여넣기'(Paste)를 고르면 됩니다.\n"
+    )
+    while True:
+        token = clean_cookie_value(_ask("auth_token"), "auth_token")
+        if token:
+            break
+        print("auth_token은 꼭 필요합니다.")
+    opts.cookie_mode = COOKIE_MANUAL
+    opts.auth_token = token
+    opts.ct0 = clean_cookie_value(_ask("ct0 (권장, 없으면 그냥 Enter)"), "ct0")
+    opts.remember_login = _ask_yes("이 기기에 로그인 정보를 저장할까요?", True)
+
+
+def _menu_options(opts: Options) -> None:
+    print("\n[옵션] 그대로 두려면 Enter")
+    choices = {"1": MEDIA_ALL, "2": MEDIA_PHOTOS, "3": MEDIA_VIDEOS}
+    current = next((k for k, v in choices.items() if v == opts.media), "1")
+    picked = _ask("받을 종류  1) 사진 + 동영상  2) 사진만  3) 동영상만", current)
+    opts.media = choices.get(picked, opts.media)
+    opts.retweets = _ask_yes("계정 모드에서 리트윗한 게시물도 받을까요?", opts.retweets)
+    opts.quick_refresh = _ask_yes("빠른 새로고침을 쓸까요? (전체를 한 번 받은 뒤에는 새로 생긴 것만 확인)", opts.quick_refresh)
+    opts.output_dir = _ask("저장 폴더", opts.output_dir)
+
+
+def _save_quietly(opts: Options) -> None:
+    try:
+        save_settings(opts)
+    except OSError as exc:
+        print(f"(설정 저장 실패: {exc})")
+
+
+def run_menu() -> int:
+    _console_safe_output()
+    opts = load_settings()
+    try:
+        while True:
+            login = "저장됨" if _has_login(opts) else "없음"
+            print(
+                f"\n===== {APP_TITLE} =====\n"
+                f"저장 폴더: {opts.output_dir}\n"
+                f"받을 종류: {MEDIA_LABELS.get(opts.media, opts.media)} · 로그인: {login}\n"
+                "  1) 내 북마크 받기\n"
+                "  2) 특정 계정의 모든 게시물 받기\n"
+                "  3) 로그인 쿠키 입력/변경\n"
+                "  4) 옵션 (종류·리트윗·빠른 새로고침·저장 폴더)\n"
+                "  5) 엔진 업데이트 (갑자기 안 될 때)\n"
+                "  0) 끝내기"
+            )
+            choice = input("번호: ").strip()
+            if choice in ("1", "2"):
+                if not _has_login(opts):
+                    _menu_login(opts)
+                if choice == "1":
+                    opts.target = BOOKMARKS
+                else:
+                    last = "" if opts.target == BOOKMARKS else opts.target
+                    try:
+                        opts.target = parse_target(_ask("계정 아이디 또는 프로필 주소 (예: @nasa)", last))
+                    except ValueError as exc:
+                        print(f"입력 오류: {exc}")
+                        continue
+                try:
+                    build_config(opts)
+                except ValueError as exc:
+                    print(f"입력 오류: {exc}")
+                    continue
+                _save_quietly(opts)
+                print()
+                run_download_console(opts)
+            elif choice == "3":
+                _menu_login(opts)
+                _save_quietly(opts)
+            elif choice == "4":
+                _menu_options(opts)
+                _save_quietly(opts)
+            elif choice == "5":
+                run_upgrade_cli()
+            elif choice in ("0", "q", "Q"):
+                return 0
+            else:
+                print("1~5 또는 0을 입력하세요.")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return 0
 
 
 def run_upgrade_cli() -> int:
@@ -994,13 +1159,25 @@ def run_gui() -> int:
     return 0
 
 
+def gui_available() -> bool:
+    if tk is None or is_android():
+        return False
+    if sys.platform.startswith("linux"):
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    return True
+
+
 def main(argv: list | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     if args.upgrade_engine:
         return run_upgrade_cli()
-    if args.gui or not args.target:
+    if args.menu:
+        return run_menu()
+    if args.gui:
         return run_gui()
-    return run_cli(args)
+    if args.target:
+        return run_cli(args)
+    return run_gui() if gui_available() else run_menu()
 
 
 if __name__ == "__main__":

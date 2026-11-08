@@ -5,7 +5,7 @@
 - 사진은 원본 해상도, 동영상은 가장 높은 화질로 저장합니다. (GIF는 X에서 mp4로 제공되므로 mp4로 저장)
 - **한 번 받은 건 다시 받지 않습니다.** 받은 파일을 다른 폴더로 옮기거나 지워도, 작성자가 아이디를 바꿔도 마찬가지입니다.
 - 처음 한 번 전체를 받고 나면, 그다음부터는 새로 북마크했거나 새로 올라온 것만 빠르게 확인해서 받습니다.
-- GUI(창)와 명령줄 둘 다 지원합니다.
+- PC(Windows/맥/리눅스)는 창(GUI)으로, **안드로이드 폰(갤럭시 등)은 Termux 앱에서 메뉴 방식**으로 씁니다.
 
 실제 수집은 오픈소스 [gallery-dl](https://github.com/mikf/gallery-dl)이 맡습니다. X는 내부 API를 자주 바꾸는데,
 그럴 때 이 앱을 고칠 필요 없이 앱의 **엔진 업데이트** 버튼만 누르면 됩니다.
@@ -24,6 +24,30 @@
 | ------------- | ------------------------------------------------------ |
 | Windows       | `run_windows.bat` 더블클릭                             |
 | macOS / Linux | 터미널에서 이 폴더로 이동 후 `bash run_mac_linux.sh`   |
+| 안드로이드    | 아래 [안드로이드 폰](#안드로이드-폰-갤럭시-등) 참고     |
+
+### 안드로이드 폰 (갤럭시 등)
+
+휴대폰에서는 무료 앱 **Termux**(안드로이드용 리눅스 터미널) 안에서 실행합니다. 화면은 번호를 고르는 메뉴 방식입니다.
+
+1. **Termux 설치** — [F-Droid](https://f-droid.org/packages/com.termux/) 또는 [GitHub](https://github.com/termux/termux-app/releases)에서 받습니다. (Play 스토어 버전은 권장하지 않습니다)
+   - 홈 화면 버튼을 쓰려면 **[Termux:Widget](https://f-droid.org/packages/com.termux.widget/)**도 **Termux와 같은 곳**에서 설치하세요. 설치처가 다르면 서로 연결되지 않습니다.
+2. Termux를 열고 아래 한 줄을 붙여넣은 뒤 Enter를 누릅니다. (화면을 길게 누르면 Paste 메뉴가 나옵니다)
+   ```
+   pkg install -y curl && curl -fsSLo setup.sh https://raw.githubusercontent.com/cheapbutsimilar/pixel-agents/claude/twitter-media-crawler-j2oynh/twitter-media-crawler/setup_android.sh && bash setup.sh
+   ```
+   중간에 **저장소 접근 권한** 팝업이 뜨면 **허용**을 누르세요.
+3. **실행** — 홈 화면에 Termux:Widget 위젯을 추가하면 버튼 두 개가 생깁니다.
+   - **X 다운로더**: 메뉴 (1 북마크 / 2 특정 계정 / 3 로그인 / 4 옵션 / 5 엔진 업데이트). 처음 받을 때 `auth_token`, `ct0`를 물어봅니다.
+   - **X 북마크 새로고침**: 저장된 로그인으로 새 북마크만 바로 받습니다.
+   - 위젯 없이 Termux에서 `bash ~/x-media-downloader/run_mac_linux.sh` 로 실행해도 됩니다.
+4. **받은 파일** — **내 파일 › 다운로드 › x-media** 에 저장되고, 갤러리 앱에도 표시됩니다.
+5. **업데이트** — Termux에서 `bash setup.sh` 를 다시 실행하면 앱과 엔진이 최신으로 바뀝니다.
+
+- 받는 중에 화면이 꺼져도 계속 받습니다. (Termux 알림에 wake lock이 표시됨) 단, 최근 앱 목록에서 Termux를 지우면 멈춥니다.
+- 갤럭시에서 오래 받다가 멈춘다면: **설정 › 애플리케이션 › Termux › 배터리 › 제한 없음**으로 바꾸세요.
+- 휴대폰 브라우저에는 F12(개발자 도구)가 없어서 쿠키를 보기 어렵습니다. PC에서 [3번](#3-로그인-쿠키-준비-필수) 방법으로 복사해 휴대폰에 붙여넣는 것이 가장 확실합니다.
+  (메신저로 옮겼다면 붙여넣은 뒤 그 메시지는 지우세요) 휴대폰만 있다면 안드로이드용 Firefox에 Cookie-Editor 같은 쿠키 보기 부가기능을 설치하는 방법도 있습니다.
 
 ## 3. 로그인 쿠키 준비 (필수)
 
@@ -130,7 +154,8 @@ x_media_downloader.py   앱 전체 (설정 생성 → gallery-dl 실행 → 결�
 tests/                  단위 테스트 (네트워크 불필요)
 requirements.txt        gallery-dl
 run_windows.bat         Windows 실행기 (.venv 생성 + 설치 + 실행)
-run_mac_linux.sh        macOS/Linux 실행기
+run_mac_linux.sh        macOS/Linux/안드로이드(Termux) 실행기
+setup_android.sh        안드로이드 Termux 설치·업데이트 (앱 내려받기, 엔진 설치, 홈 화면 버튼)
 ```
 
 테스트: `python -m unittest discover -s tests -v`

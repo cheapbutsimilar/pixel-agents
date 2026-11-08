@@ -4,11 +4,13 @@
 """
 
 import argparse
+import io
 import json
 import os
 import sys
 import tempfile
 import unittest
+from dataclasses import asdict
 from pathlib import Path
 from unittest import mock
 
@@ -261,6 +263,7 @@ class DownloadTest(unittest.TestCase):
             self.assertEqual((result.downloaded, result.skipped, result.errors, result.returncode), (2, 1, 1, 4))
             self.assertFalse(result.stopped)
             self.assertIn(("file", os.path.join("nasa", "a.jpg")), events)  # 저장 폴더 기준 상대 경로로 표시
+            self.assertIn(("skip", os.path.join("nasa", "c.jpg")), events)
             self.assertEqual(runner.config["extractor"]["twitter"]["cookies"], {"auth_token": "TOKEN", "ct0": "CSRF"})
             self.assertFalse(os.path.exists(runner.config_path), "로그인 쿠키가 든 임시 설정 파일은 지워져야 함")
             self.assertIn("받음 2개", result.summary())
@@ -386,7 +389,105 @@ class ProcessRunnerTest(unittest.TestCase):
         self.assertTrue(runner.stopped)
 
 
+class AndroidTest(unittest.TestCase):
+    def test_detection(self):
+        with mock.patch.dict(os.environ, {"PREFIX": "/data/data/com.termux/files/usr"}):
+            self.assertTrue(xmd.is_android())
+            self.assertEqual(xmd.default_output_dir(), "/storage/emulated/0/Download/x-media")
+        if hasattr(sys, "getandroidapilevel"):
+            self.skipTest("실제 안드로이드 파이썬")
+        with mock.patch.dict(os.environ, {"PREFIX": "/usr"}):
+            self.assertFalse(xmd.is_android())
+            self.assertEqual(xmd.default_output_dir(), str(Path.home() / "Downloads" / "x-media"))
+
+    def test_gui_available(self):
+        with mock.patch.object(xmd, "tk", None):
+            self.assertFalse(xmd.gui_available())
+        with mock.patch.object(xmd, "tk", object()), mock.patch.object(xmd, "is_android", return_value=True):
+            self.assertFalse(xmd.gui_available())
+        with mock.patch.object(xmd, "tk", object()), mock.patch.object(xmd, "is_android", return_value=False), \
+                mock.patch.object(sys, "platform", "linux"):
+            with mock.patch.dict(os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": ""}):
+                self.assertFalse(xmd.gui_available())
+            with mock.patch.dict(os.environ, {"DISPLAY": ":0"}):
+                self.assertTrue(xmd.gui_available())
+
+    def test_permission_error_hint_on_android(self):
+        with mock.patch.object(xmd, "engine_version", return_value="1.0"), \
+                mock.patch.object(xmd, "is_android", return_value=True), \
+                mock.patch.object(xmd, "_termux_command") as termux, \
+                mock.patch.object(xmd, "download", side_effect=PermissionError("denied")), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(xmd.run_download_console(make_opts()), 1)
+        self.assertIn("termux-setup-storage", err.getvalue())
+        # 화면이 꺼져도 멈추지 않게 wake lock을 잡고, 실패해도 반드시 푼다
+        self.assertEqual([c.args[0] for c in termux.call_args_list], ["termux-wake-lock", "termux-wake-unlock"])
+
+
+class MenuTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        for patcher in (
+            mock.patch.object(xmd, "SETTINGS_FILE", Path(self.tmp.name) / "settings.json"),
+            mock.patch.object(xmd, "load_settings", return_value=xmd.Options(output_dir=self.tmp.name)),
+            mock.patch("sys.stdout", new_callable=io.StringIO),
+        ):
+            self.stdout = patcher.start()
+            self.addCleanup(patcher.stop)
+        self.runs = []
+        patcher = mock.patch.object(xmd, "run_download_console", side_effect=lambda o: self.runs.append(asdict(o)) or 0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def menu(self, *answers):
+        with mock.patch("builtins.input", side_effect=list(answers)):
+            return xmd.run_menu()
+
+    def test_first_run_asks_login_then_downloads_bookmarks(self):
+        self.assertEqual(self.menu("1", " auth_token=TOK; ", "'CT'", "", "0"), 0)
+        self.assertEqual(len(self.runs), 1)
+        run = self.runs[0]
+        self.assertEqual((run["target"], run["auth_token"], run["ct0"], run["remember_login"]), ("bookmarks", "TOK", "CT", True))
+        saved = json.loads(xmd.SETTINGS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(saved["auth_token"], "TOK")
+
+    def test_login_required_and_not_saved_when_declined(self):
+        self.menu("3", "", "TOK", "", "n", "0")  # 빈 auth_token은 다시 물어봄
+        saved = json.loads(xmd.SETTINGS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual((saved["auth_token"], saved["remember_login"]), ("", False))
+
+    def test_account_and_bad_input(self):
+        self.menu("3", "TOK", "", "y", "2", "not valid!", "2", "https://x.com/NASA/media", "9", "0")
+        self.assertEqual([r["target"] for r in self.runs], ["NASA"])
+        self.assertIn("입력 오류", self.stdout.getvalue())
+        self.assertIn("1~5 또는 0", self.stdout.getvalue())
+
+    def test_options(self):
+        self.menu("4", "3", "y", "n", "", "3", "TOK", "", "y", "1", "0")
+        run = self.runs[0]
+        self.assertEqual((run["media"], run["retweets"], run["quick_refresh"]), ("videos", True, False))
+        self.assertEqual(run["output_dir"], self.tmp.name)  # Enter = 그대로
+
+    def test_eof_and_ctrl_c_exit_cleanly(self):
+        with mock.patch("builtins.input", side_effect=EOFError):  # 입력 끝
+            self.assertEqual(xmd.run_menu(), 0)
+        with mock.patch("builtins.input", side_effect=KeyboardInterrupt):
+            self.assertEqual(xmd.run_menu(), 0)
+
+
 class MainTest(unittest.TestCase):
+    def test_no_args_dispatch(self):
+        with mock.patch.object(xmd, "run_gui", return_value=0) as gui, mock.patch.object(
+            xmd, "run_menu", return_value=0
+        ) as menu:
+            with mock.patch.object(xmd, "gui_available", return_value=True):
+                xmd.main([])
+            with mock.patch.object(xmd, "gui_available", return_value=False):
+                xmd.main([])
+            xmd.main(["--menu"])
+            self.assertEqual((gui.call_count, menu.call_count), (1, 2))
+
     def test_cli_rejects_bad_input_without_running(self):
         with mock.patch.object(xmd, "load_settings", return_value=xmd.Options()), mock.patch.object(
             xmd, "download"
