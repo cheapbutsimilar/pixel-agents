@@ -116,6 +116,18 @@ _NON_USER_PATHS = {
     "signup",
 }
 _LOG_LINE = re.compile(r"^\[[^\]]*\]\[(\w+)\]")
+_POST_TARGET = re.compile(r"([A-Za-z0-9_]+)/status/(\d+)")
+# 공유 문구 안에 섞인 X 링크 (예: "이 게시물 보세요 https://x.com/a/status/1?s=20")
+_X_URL_IN_TEXT = re.compile(r"https?://(?:www\.|mobile\.)?(?:x|twitter)\.com/\S+", re.IGNORECASE)
+_AUTH_TOKEN_FORMAT = re.compile(r"[0-9a-f]{40}")
+# gallery-dl 로그 중 로그인 쿠키 문제를 뜻하는 문구
+_AUTH_ERROR_MARKERS = (
+    "Could not authenticate you",
+    "AuthRequired",
+    "authenticated cookies",
+    "login session cookies",
+    "redirect to login page",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +137,7 @@ _LOG_LINE = re.compile(r"^\[[^\]]*\]\[(\w+)\]")
 
 @dataclass
 class Options:
-    target: str = BOOKMARKS  # BOOKMARKS 또는 계정 아이디(@ 없이)
+    target: str = BOOKMARKS  # BOOKMARKS, 계정 아이디(@ 없이), 또는 게시물 '아이디/status/숫자'
     output_dir: str = DEFAULT_OUTPUT_DIR
     media: str = MEDIA_ALL  # MEDIA_ALL / MEDIA_PHOTOS / MEDIA_VIDEOS
     retweets: bool = False  # 계정 모드에서 리트윗한 게시물의 미디어도 받기
@@ -173,17 +185,23 @@ def save_settings(opts: Options) -> None:
 
 
 def parse_target(raw: str) -> str:
-    """입력값을 BOOKMARKS 또는 계정 아이디로 바꾼다. 해석할 수 없으면 ValueError.
+    """입력값을 BOOKMARKS, 계정 아이디, 또는 게시물('아이디/status/숫자')로 바꾼다. 해석할 수 없으면 ValueError.
 
     허용: bookmarks, 북마크, https://x.com/i/bookmarks, @아이디, 아이디,
-    https://x.com/아이디, twitter.com/아이디/media 등
+    https://x.com/아이디 (계정 전체), https://x.com/아이디/status/숫자 (그 게시물만),
+    X 앱의 '공유'로 받은 링크나 링크가 섞인 문장
     """
     text = raw.strip()
     if not text:
         raise ValueError("대상 계정을 입력하세요.")
     if text.lower() in ("bookmarks", "bookmark", "북마크"):
         return BOOKMARKS
+    found = _X_URL_IN_TEXT.search(text)
+    if found:
+        text = found.group(0)
 
+    if _POST_TARGET.fullmatch(text):  # 저장된 설정에서 다시 읽을 때의 내부 형식
+        return text
     if text.startswith("@"):
         text = text[1:]
     elif "/" in text or "." in text:  # 아이디에는 / 와 . 이 들어갈 수 없으니 URL로 본다
@@ -196,6 +214,10 @@ def parse_target(raw: str) -> str:
             return BOOKMARKS
         if not parts or parts[0].lower() in _NON_USER_PATHS:
             raise ValueError(f"주소에서 계정 아이디를 찾을 수 없습니다: {raw}")
+        if len(parts) >= 3 and parts[1] == "status" and parts[2].isdigit():
+            if not _SCREEN_NAME.fullmatch(parts[0]):
+                raise ValueError(f"올바른 계정 아이디가 아닙니다: {raw}")
+            return f"{parts[0]}/status/{parts[2]}"
         text = parts[0]
 
     if not _SCREEN_NAME.fullmatch(text):
@@ -203,9 +225,17 @@ def parse_target(raw: str) -> str:
     return text
 
 
+def split_post(target: str):
+    """게시물 대상이면 (계정 아이디, 게시물 ID), 아니면 None."""
+    match = _POST_TARGET.fullmatch(target)
+    return (match.group(1), match.group(2)) if match else None
+
+
 def target_url(target: str) -> str:
     if target == BOOKMARKS:
         return "https://x.com/i/bookmarks"
+    if split_post(target):
+        return f"https://x.com/{target}"
     # 프로필 주소를 주면 gallery-dl이 미디어 탭을 먼저 훑고, 그보다 오래된 게시물은
     # 검색으로 이어서 찾아 계정의 전체 게시물을 대상으로 한다.
     return f"https://x.com/{target}"
@@ -258,7 +288,13 @@ def output_base(opts: Options) -> Path:
 
 
 def history_paths(base_dir: Path, target: str) -> tuple:
-    """대상별 (받은 기록 DB, 상태 파일) 경로. 계정 아이디는 대소문자를 구분하지 않는다."""
+    """대상별 (받은 기록 DB, 상태 파일) 경로. 계정 아이디는 대소문자를 구분하지 않는다.
+
+    게시물 하나를 받을 때는 그 계정의 기록을 같이 쓴다. 그래서 나중에 계정 전체를 받아도 중복되지 않는다.
+    """
+    post = split_post(target)
+    if post:
+        target = post[0]
     key = BOOKMARKS if target == BOOKMARKS else target.lower()
     directory = base_dir / HISTORY_DIR_NAME
     return directory / f"{key}.sqlite3", directory / f"{key}.json"
@@ -398,19 +434,25 @@ def classify_line(line: str) -> tuple:
     return "info", line
 
 
-def describe_exit(code: int) -> str:
-    """gallery-dl 종료 코드(오류 종류별 비트 OR)를 사람이 읽을 설명으로."""
+def describe_exit(code: int, auth_error: bool = False) -> str:
+    """gallery-dl 종료 코드(오류 종류별 비트 OR)를 사람이 읽을 설명으로.
+
+    auth_error: 로그에 로그인 실패 문구가 있었는지. gallery-dl은 이 경우에도 종료 코드 4를 낼 때가 있다.
+    """
     if code == 0:
         return "완료"
     hints = []
-    if code & 16:
+    if code & 16 or auth_error:
         hints.append(
-            "로그인 쿠키가 만료됐거나 잘못됐습니다. x.com에 다시 로그인한 뒤 auth_token/ct0를 새로 복사하세요. "
-            "(계정 모드라면 비공개 계정이거나 나를 차단한 계정일 수도 있습니다)"
+            "X가 로그인 쿠키를 받아주지 않았습니다. auth_token/ct0 값이 틀렸거나 만료됐습니다. "
+            "PC 브라우저에서 x.com에 로그인된 상태로 두 값을 새로 복사해 다시 입력하세요 "
+            "(글자 메뉴 3번, 창에서는 로그인 칸). X에서 로그아웃하면 그 쿠키는 더 이상 쓸 수 없습니다."
         )
+        if not auth_error:
+            hints.append("(계정을 받는 중이었다면 비공개 계정이거나 나를 차단한 계정일 수도 있습니다)")
     if code & 8:
         hints.append("X가 자동화 요청을 막았습니다. 잠시 후 다시 시도하세요.")
-    if code & 4:
+    if code & 4 and not auth_error:
         hints.append(
             "X에서 데이터를 받지 못했습니다. 인터넷 연결과 계정 아이디를 확인하고, 계속 실패하면 "
             "'엔진 업데이트'(또는 --upgrade-engine)로 gallery-dl을 최신 버전으로 올린 뒤 다시 시도하세요."
@@ -476,12 +518,26 @@ class Result:
     returncode: int = 0
     stopped: bool = False
     quick: bool = False  # 빠른 새로고침으로 실행됐는지
+    auth_error: bool = False  # 로그에 로그인 실패 문구가 있었는지
 
     def summary(self) -> str:
         counts = f"받음 {self.downloaded}개 · 건너뜀(이미 받음) {self.skipped}개"
         if self.stopped:
             return f"중지됨 — {counts}"
-        return f"{describe_exit(self.returncode)} — {counts}"
+        return f"{describe_exit(self.returncode, self.auth_error)} — {counts}"
+
+
+def cookie_warnings(opts: Options) -> list:
+    """막지는 않지만 흔한 복사 실수로 보이는 값을 알려준다."""
+    if opts.cookie_mode != COOKIE_MANUAL:
+        return []
+    token = clean_cookie_value(opts.auth_token, "auth_token")
+    if token and not _AUTH_TOKEN_FORMAT.fullmatch(token):
+        return [
+            f"auth_token 값이 이상합니다 (보통 영문 소문자·숫자 40자리인데 {len(token)}자리). "
+            "Name이 auth_token인 줄의 Value를 복사했는지 확인하세요."
+        ]
+    return []
 
 
 def download(
@@ -499,7 +555,8 @@ def download(
     base_dir = output_base(opts)
     archive_path, state_path = history_paths(base_dir, opts.target)
     scope = run_scope(opts)
-    quick = opts.quick_refresh and scope_covered(load_completed_scopes(state_path), scope)
+    is_post = split_post(opts.target) is not None
+    quick = not is_post and opts.quick_refresh and scope_covered(load_completed_scopes(state_path), scope)
     config = build_config(opts, quick_refresh=quick)  # 입력 검증 — 실패하면 아무것도 만들지 않음
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     runner = runner or ProcessRunner()
@@ -518,6 +575,8 @@ def download(
                 pass
         elif kind == "error":
             result.errors += 1
+        if kind in ("error", "warning") and any(marker in text for marker in _AUTH_ERROR_MARKERS):
+            result.auth_error = True
         on_event(kind, text)
 
     # 설정 파일에 로그인 쿠키가 들어가므로 본인만 읽을 수 있는 임시 파일(mkstemp는 0600)에 쓰고 끝나면 지운다
@@ -527,7 +586,11 @@ def download(
             json.dump(config, fp, ensure_ascii=False)
         url = target_url(opts.target)
         on_event("info", f"시작: {url}  →  {base_dir}")
-        if quick:
+        for warning in cookie_warnings(opts):
+            on_event("warning", warning)
+        if is_post:
+            on_event("info", "게시물 하나의 사진·동영상을 받습니다.")
+        elif quick:
             on_event(
                 "info",
                 f"빠른 새로고침: 새로 생긴 것만 받고, 이미 받은 파일이 연속 {QUICK_REFRESH_SKIP_LIMIT}개 나오면 멈춥니다.",
@@ -542,7 +605,7 @@ def download(
             pass
     result.stopped = runner.stopped
 
-    if not quick and result.returncode == 0 and not result.stopped:
+    if not quick and not is_post and result.returncode == 0 and not result.stopped:
         try:
             record_full_scan(state_path, scope)
         except OSError as exc:
@@ -724,6 +787,8 @@ def _menu_login(opts: Options) -> None:
     opts.cookie_mode = COOKIE_MANUAL
     opts.auth_token = token
     opts.ct0 = clean_cookie_value(_ask("ct0 (권장, 없으면 그냥 Enter)"), "ct0")
+    for warning in cookie_warnings(opts):
+        print(f"주의: {warning}")
     opts.remember_login = _ask_yes("이 기기에 로그인 정보를 저장할까요?", True)
 
 
@@ -771,7 +836,9 @@ def run_menu() -> int:
                 else:
                     last = "" if opts.target == BOOKMARKS else opts.target
                     try:
-                        opts.target = parse_target(_ask("계정 아이디 또는 프로필 주소 (예: @nasa)", last))
+                        opts.target = parse_target(
+                            _ask("계정 아이디·프로필 주소 (예: @nasa), 게시물 링크를 넣으면 그 게시물만", last)
+                        )
                     except ValueError as exc:
                         print(f"입력 오류: {exc}")
                         continue

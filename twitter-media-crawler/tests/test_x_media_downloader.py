@@ -38,11 +38,25 @@ class ParseTargetTest(unittest.TestCase):
             "https://x.com/nasa": "nasa",
             "https://twitter.com/nasa/media": "nasa",
             "x.com/nasa?lang=ko": "nasa",
-            "https://mobile.twitter.com/nasa/status/123": "nasa",
+            "https://x.com/nasa?s=21&t=abc": "nasa",  # X 앱 '프로필 공유' 링크
             "www.x.com/nasa/": "nasa",
         }
         for raw, expected in cases.items():
             self.assertEqual(xmd.parse_target(raw), expected, raw)
+
+    def test_post_links(self):
+        cases = {
+            "https://x.com/nasa/status/1850000000000000001?s=46&t=xyz": "nasa/status/1850000000000000001",
+            "https://mobile.twitter.com/NASA/status/123/photo/1": "NASA/status/123",
+            "이 게시물 봐 https://x.com/nasa/status/42?s=20 ㅋㅋ": "nasa/status/42",  # 공유 문구에 섞인 링크
+            "nasa/status/42": "nasa/status/42",  # 저장된 설정의 내부 형식
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(xmd.parse_target(raw), expected, raw)
+        self.assertEqual(xmd.split_post("nasa/status/42"), ("nasa", "42"))
+        self.assertIsNone(xmd.split_post("nasa"))
+        self.assertIsNone(xmd.split_post(xmd.BOOKMARKS))
+        self.assertEqual(xmd.target_url("nasa/status/42"), "https://x.com/nasa/status/42")
 
     def test_invalid(self):
         for raw in ("", "   ", "@", "bad name", "한글", "https://example.com/nasa", "https://x.com/", "https://x.com/home", "x.com/i/lists/1"):
@@ -152,6 +166,11 @@ class ClassifyLineTest(unittest.TestCase):
         self.assertEqual(xmd.classify_line("[downloader.http][warning] slow")[0], "warning")
         self.assertEqual(xmd.classify_line("[twitter][info] Waiting until 12:00")[0], "info")
         self.assertEqual(xmd.classify_line("Traceback (most recent call last):")[0], "info")
+
+    def test_describe_exit_auth_error_overrides_generic_hint(self):
+        msg = xmd.describe_exit(4, auth_error=True)
+        self.assertIn("로그인 쿠키", msg)
+        self.assertNotIn("인터넷 연결", msg)  # 실제 원인이 아닌 안내로 헷갈리게 하지 않음
 
     def test_describe_exit(self):
         self.assertEqual(xmd.describe_exit(0), "완료")
@@ -268,6 +287,23 @@ class DownloadTest(unittest.TestCase):
             self.assertFalse(os.path.exists(runner.config_path), "로그인 쿠키가 든 임시 설정 파일은 지워져야 함")
             self.assertIn("받음 2개", result.summary())
 
+    def test_auth_error_detected_from_log(self):
+        with tempfile.TemporaryDirectory() as out:
+            runner = FakeRunner(["[twitter][error] 'Could not authenticate you'"], code=4)
+            result = xmd.download(make_opts(target=xmd.BOOKMARKS, output_dir=out), lambda k, t: None, runner)
+            self.assertTrue(result.auth_error)
+            self.assertIn("로그인 쿠키", result.summary())
+            self.assertNotIn("인터넷 연결", result.summary())
+
+    def test_cookie_format_warning(self):
+        self.assertEqual(xmd.cookie_warnings(make_opts(auth_token="a" * 40)), [])
+        self.assertEqual(len(xmd.cookie_warnings(make_opts(auth_token="auth_token"))), 1)
+        self.assertEqual(xmd.cookie_warnings(make_opts(cookie_mode=xmd.COOKIE_BROWSER)), [])
+        with tempfile.TemporaryDirectory() as out:
+            events = []
+            xmd.download(make_opts(output_dir=out, auth_token="short"), lambda k, t: events.append((k, t)), FakeRunner([]))
+            self.assertTrue(any(k == "warning" and "auth_token" in t for k, t in events))
+
     def test_invalid_input_runs_nothing(self):
         runner = FakeRunner([])
         with self.assertRaises(ValueError):
@@ -340,6 +376,18 @@ class QuickRefreshGatingTest(unittest.TestCase):
             self.assertTrue(self.run_once(out, target="nasa", media=xmd.MEDIA_PHOTOS)[0].quick)
             self.assertFalse(self.run_once(out, target="nasa", media=xmd.MEDIA_ALL)[0].quick)
             self.assertTrue(self.run_once(out, target="nasa", media=xmd.MEDIA_VIDEOS)[0].quick)
+
+    def test_single_post_uses_account_history_and_never_quick(self):
+        with tempfile.TemporaryDirectory() as out:
+            self.run_once(out, target="nasa")  # 계정 전체 받기 완료
+            r, cfg, _ = self.run_once(out, target="NASA/status/42")
+            self.assertFalse(r.quick)
+            self.assertNotIn("skip", cfg["extractor"])
+            # 계정과 같은 기록을 쓰므로 나중에 계정 전체를 받아도 이 게시물은 중복되지 않는다
+            self.assertTrue(cfg["extractor"]["archive"].endswith(os.path.join(".download-history", "nasa.sqlite3")))
+        with tempfile.TemporaryDirectory() as out:
+            self.run_once(out, target="nasa/status/42")
+            self.assertFalse(self.run_once(out, target="nasa")[0].quick, "게시물 하나 받은 것을 계정 전체 받기로 기록하면 안 됨")
 
     def test_quick_refresh_off_always_full(self):
         with tempfile.TemporaryDirectory() as out:
