@@ -2,7 +2,8 @@
 # X 미디어 다운로더 — 안드로이드(Termux) 설치/업데이트
 #
 # Termux 앱에서 아래 한 줄을 붙여넣어 실행합니다. 다시 실행하면 앱과 엔진을 최신으로 업데이트합니다.
-#   pkg install -y curl && curl -fsSLo setup.sh https://raw.githubusercontent.com/cheapbutsimilar/pixel-agents/claude/twitter-media-crawler-j2oynh/twitter-media-crawler/setup_android.sh && bash setup.sh
+# (yes | pkg upgrade 를 먼저 해야 한다: 갓 설치한 Termux에서 curl만 올리면 openssl과 버전이 어긋나 curl이 깨진다)
+#   yes | pkg upgrade && pkg install -y curl && curl -fsSLo setup.sh https://raw.githubusercontent.com/cheapbutsimilar/pixel-agents/claude/twitter-media-crawler-j2oynh/twitter-media-crawler/setup_android.sh && bash setup.sh
 set -euo pipefail
 
 BASE_URL="${XMD_BASE_URL:-https://raw.githubusercontent.com/cheapbutsimilar/pixel-agents/claude/twitter-media-crawler-j2oynh/twitter-media-crawler}"
