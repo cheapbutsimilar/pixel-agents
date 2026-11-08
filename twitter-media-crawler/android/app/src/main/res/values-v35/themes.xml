@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 안드로이드 15: 화면이 상태 표시줄 아래로 들어가지 않도록 (액션바가 있는 일반 화면 배치를 유지) -->
+    <style name="Theme.XMedia" parent="Theme.Material3.DayNight">
+        <item name="colorPrimary">#1D9BF0</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+    </style>
+</resources>

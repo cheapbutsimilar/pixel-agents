@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- 아래 화살표 + 받침: '내려받기' -->
+    <path android:fillColor="#1D9BF0"
+        android:pathData="M50,30h8v26l9,-9l5.6,5.6L54,71.2L35.4,52.6L41,47l9,9z" />
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M34,74h40v6H34z" />
+</vector>

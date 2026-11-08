@@ -1,0 +1,7 @@
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+# 서명 키 비밀번호 등 로컬 전용 설정
+keystore.properties

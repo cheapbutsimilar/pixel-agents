@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">X 미디어 다운로더</string>
+    <string name="share_label">X 미디어 다운로드</string>
+
+    <string name="section_login">1. X 로그인</string>
+    <string name="btn_login">X 로그인</string>
+    <string name="btn_relogin">다시 로그인</string>
+    <string name="btn_manual">로그인이 안 되면: 쿠키 직접 입력</string>
+    <string name="login_hint">X 계정으로 로그인하세요. 로그인이 끝나면 자동으로 닫힙니다. 비밀번호는 X 페이지에 직접 입력되며 이 앱은 비밀번호를 저장하지 않습니다. (구글 계정으로만 로그인하는 계정은 X 비밀번호를 먼저 만들어야 합니다)</string>
+
+    <string name="section_target">2. 어디서 받을까요?</string>
+    <string name="target_bookmarks">내 북마크</string>
+    <string name="target_account">특정 계정의 모든 게시물 / 게시물 링크</string>
+    <string name="account_hint">@아이디, 프로필 주소 또는 게시물 링크</string>
+    <string name="share_hint">X 앱에서 게시물이나 프로필의 공유 → \'X 미디어 다운로드\'를 고르면 바로 받습니다.</string>
+
+    <string name="section_options">3. 옵션</string>
+    <string name="media_all">사진+동영상</string>
+    <string name="media_photos">사진만</string>
+    <string name="media_videos">동영상만</string>
+    <string name="opt_retweets">리트윗한 게시물도 받기 (계정)</string>
+    <string name="opt_quick">빠른 새로고침 (한 번 전체를 받은 뒤엔 새 것만 확인)</string>
+    <string name="save_location">저장 위치: 갤러리 › XMedia 폴더 (Pictures/XMedia/북마크 또는 계정). 한 번 받은 건 다시 받지 않습니다.</string>
+
+    <string name="btn_start">다운로드 시작</string>
+    <string name="btn_stop">중지</string>
+
+    <string name="engine_hint">잘 되다가 갑자기 안 되면 X가 바뀐 것입니다. 엔진 업데이트를 누르세요.</string>
+    <string name="btn_engine_update">엔진 업데이트</string>
+    <string name="btn_engine_reset">기본 엔진으로</string>
+</resources>
