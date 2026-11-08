@@ -70,6 +70,7 @@ cat <<DONE
   - 지금 실행:        bash ~/x-media-downloader/run_mac_linux.sh
   - 홈 화면 버튼:     Termux:Widget 앱 설치 → 홈 화면 빈 곳 길게 누르기 → 위젯 → Termux:Widget
                       ('X 다운로더' = 메뉴, 'X 북마크 새로고침' = 저장된 로그인으로 새 북마크만 받기)
+                      ※ Termux:Widget 앱 아이콘을 누르면 영어 설명 화면만 나옵니다. 위젯으로 추가해서 쓰세요.
   - 받은 파일:        내 파일 > 다운로드 > x-media (갤러리 앱에도 표시)
   - 업데이트:         bash setup.sh 를 다시 실행
 DONE

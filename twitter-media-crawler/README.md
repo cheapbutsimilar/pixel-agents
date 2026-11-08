@@ -37,7 +37,8 @@
    pkg install -y curl && curl -fsSLo setup.sh https://raw.githubusercontent.com/cheapbutsimilar/pixel-agents/claude/twitter-media-crawler-j2oynh/twitter-media-crawler/setup_android.sh && bash setup.sh
    ```
    중간에 **저장소 접근 권한** 팝업이 뜨면 **허용**을 누르세요.
-3. **실행** — 홈 화면에 Termux:Widget 위젯을 추가하면 버튼 두 개가 생깁니다.
+3. **실행** — 홈 화면 빈 곳 길게 누르기 › **위젯** › **Termux:Widget** 추가 → 위젯 안에 버튼 두 개가 생깁니다.
+   (Termux:Widget 앱 아이콘을 누르면 영어 설명 화면만 나오는데 정상입니다. 앱이 아니라 위젯으로 씁니다)
    - **X 다운로더**: 메뉴 (1 북마크 / 2 특정 계정 / 3 로그인 / 4 옵션 / 5 엔진 업데이트). 처음 받을 때 `auth_token`, `ct0`를 물어봅니다.
    - **X 북마크 새로고침**: 저장된 로그인으로 새 북마크만 바로 받습니다.
    - 위젯 없이 Termux에서 `bash ~/x-media-downloader/run_mac_linux.sh` 로 실행해도 됩니다.
